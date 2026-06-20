@@ -14,10 +14,10 @@ $$
 \begin{aligned}
 \lambda(t,x,y,z\mid\mathcal{H}_t)
 &= \mu(x,y,z) \\
-&\quad + \sum_{i:\,t_i<t}
-   \kappa(m_i)\,
-   g(t-t_i;c,p)\,
-   f\bigl(\|(x,y)-(x_i,y_i)\|;\, m_i,D,q,\gamma\bigr)\,
+&\quad + \sum_{i: t_i<t}
+   \kappa(m_i) 
+   g(t-t_i;c,p) 
+   f(|(x,y)-(x_i,y_i)|; m_i,D,q,\gamma) 
    h(z;z_i,\eta,Z_{\max}),
 \end{aligned}
 $$
@@ -45,7 +45,7 @@ g(\delta t; c, p)
 \qquad \delta t\ge 0,\; c>0,\; p>1.
 $$
 
-Normalisation $\int_0^\infty g\,d(\delta t)=1$ follows from
+Normalisation $\int_0^\infty g d(\delta t)=1$ follows from
 $\frac{d}{d\tau}(1+\tau/c)^{1-p}=-(p-1)/c\cdot(1+\tau/c)^{-p}$.
 
 ### 2.2  Spatial Power-Law Kernel (mver=1)
@@ -56,11 +56,11 @@ f(r; m_j,D,\gamma,q)
 \qquad \sigma_j = D e^{\gamma m_j},\; q>1.
 $$
 
-The angular integral yields $2\pi r\,dr$, and
+The angular integral yields $2\pi r dr$, and
 
 $$
-\int_{\mathbb{R}^2}f\,dxdy
-= \int_0^\infty\frac{2(q-1)r/\sigma_j}{(1+r^2/\sigma_j)^q}\,dr
+\int_{\mathbb{R}^2}f dxdy
+= \int_0^\infty\frac{2(q-1)r/\sigma_j}{(1+r^2/\sigma_j)^q} dr
 = \Bigl[-\bigl(1+r^2/\sigma_j\bigr)^{1-q}\Bigr]_0^\infty
 = 1.
 $$
@@ -70,7 +70,7 @@ $$
 $$
 f(r; m_j,D,\gamma)
 = \frac{1}{2\pi\sigma_j}
-   \exp\!\Bigl(-\frac{r^2}{2\sigma_j}\Bigr),
+   \exp\Bigl(-\frac{r^2}{2\sigma_j}\Bigr),
 \qquad \sigma_j = D e^{\gamma m_j}.
 $$
 
@@ -80,13 +80,13 @@ Define normalised depths $u=z/Z_{\max}$, $v=z'/Z_{\max}$. The kernel is
 
 $$
 h(u;v,\eta)
-= \frac{u^{\eta v}\,(1-u)^{\eta(1-v)}}
-        {Z_{\max}\,
-         B\!\bigl(\eta v+1,\;\eta(1-v)+1\bigr)},
+= \frac{u^{\eta v} (1-u)^{\eta(1-v)}}
+        {Z_{\max} 
+         B\bigl(\eta v+1,\;\eta(1-v)+1\bigr)},
 $$
 
 where $B(a,b)=\Gamma(a)\Gamma(b)/\Gamma(a+b)$ is the Beta function.
-By construction $\int_0^{Z_{\max}}\!h\,dz=1$ for any parent depth $v$.
+By construction $\int_0^{Z_{\max}}h dz=1$ for any parent depth $v$.
 The parameter $\eta\ge 0$ controls concentration: large $\eta$ implies
 strong depth-dependence.
 
@@ -108,7 +108,7 @@ $$
 = \varepsilon_t
 \;\Longrightarrow\;
 T_{\max}
-= c\Bigl[\Bigl(\frac{p-1}{c\,\varepsilon_t}\Bigr)^{1/p}-1\Bigr].
+= c\Bigl[\Bigl(\frac{p-1}{c \varepsilon_t}\Bigr)^{1/p}-1\Bigr].
 $$
 
 The integral over $[0,T_{\max}]$ is
@@ -116,7 +116,7 @@ The integral over $[0,T_{\max}]$ is
 $$
 \begin{aligned}
 G_{\text{norm}}(c,p,\varepsilon_t)
-&= \int_0^{T_{\max}}\!g(\tau)\,d\tau \\[2pt]
+&= \int_0^{T_{\max}}g(\tau) d\tau \\
 &= 1-\Bigl(1+\frac{T_{\max}}{c}\Bigr)^{1-p}
  = 1-u^{1-p},
 \end{aligned}
@@ -143,7 +143,7 @@ The disk integral gives
 $$
 \begin{aligned}
 F_{\text{norm}}(m_j;D,\gamma,q,\varepsilon_s)
-&= \int_0^{R_{\max}}\!2\pi r\,f(r\mid m_j)\,dr \\[2pt]
+&= \int_0^{R_{\max}}2\pi r f(r\mid m_j) dr \\
 &= 1-\Bigl(1+\frac{R_{\max}^2}{\sigma_j}\Bigr)^{1-q}
  = 1-v^{1-q},
 \end{aligned}
@@ -158,7 +158,7 @@ $$
 \tilde{f}(r\mid m_j)=\frac{f(r\mid m_j)}{F_{\text{norm}}(m_j)},
 $$
 
-guaranteeing $\int_0^{T_{\max}}\!\tilde{g}=1$ and
+guaranteeing $\int_0^{T_{\max}}\tilde{g}=1$ and
 $\int_{\text{disk}}\tilde{f}=1$.
 
 **Important:** $G_{\text{norm}}$ is a scalar; $F_{\text{norm}}$ is a
@@ -172,13 +172,13 @@ With renormalization the intensity at event $j$ becomes
 
 $$
 \lambda_j
-= \mu\,b_j
+= \mu b_j
 + \sum_{\substack{i<j\\
                  \delta t_{ij}\le T_{\max}\\
                  r_{ij}\le R_{\max}(m_i)}}
-   \kappa(m_i)\,
-   \frac{g(\delta t_{ij})}{G_{\text{norm}}}\,
-   \frac{f(r_{ij}\mid m_i)}{F_{\text{norm}}(m_i)}\,
+   \kappa(m_i) 
+   \frac{g(\delta t_{ij})}{G_{\text{norm}}} 
+   \frac{f(r_{ij}\mid m_i)}{F_{\text{norm}}(m_i)} 
    h(z_j\mid z_i),
 $$
 
@@ -224,10 +224,10 @@ Write $G=1-u^{1-p}$ with $u=((p-1)/(c\varepsilon_t))^{1/p}$:
 
 $$
 \begin{aligned}
-\ln u    &= \frac{1}{p}\ln\frac{p-1}{c\varepsilon_t}, \\[2pt]
+\ln u    &= \frac{1}{p}\ln\frac{p-1}{c\varepsilon_t}, \\
 \frac{du}{dc} &= -\frac{u}{pc},\qquad
-\frac{du}{dp} = u\Bigl[\frac{1}{p(p-1)}-\frac{\ln u}{p}\Bigr], \\[4pt]
-\frac{dG}{dc} &= -\frac{p-1}{pc}\,u^{1-p}, \\[2pt]
+\frac{du}{dp} = u\Bigl[\frac{1}{p(p-1)}-\frac{\ln u}{p}\Bigr], \\
+\frac{dG}{dc} &= -\frac{p-1}{pc} u^{1-p}, \\
 \frac{dG}{dp} &= u^{1-p}\ln u-(1-p)u^{-p}\frac{du}{dp}.
 \end{aligned}
 $$
@@ -238,12 +238,12 @@ $\sigma=D e^{\gamma m}$:
 $$
 \begin{aligned}
 \ln v    &= \frac{1}{q}\ln\frac{q-1}{\pi\varepsilon_s}
-          -\frac{1}{q}\ln\sigma, \\[2pt]
+          -\frac{1}{q}\ln\sigma, \\
 \frac{dv}{dD}    &= -\frac{v}{qD},\qquad
-\frac{dv}{d\gamma}= -\frac{v\,m}{q}, \\[2pt]
-\frac{dv}{dq}    &= v\Bigl[\frac{1}{q(q-1)}-\frac{\ln v}{q}\Bigr], \\[4pt]
-\frac{dF}{dD}    &= -\frac{q-1}{qD}\,v^{1-q}, \\[2pt]
-\frac{dF}{d\gamma}&= -\frac{q-1}{q}\,m\,v^{1-q}, \\[2pt]
+\frac{dv}{d\gamma}= -\frac{v m}{q}, \\
+\frac{dv}{dq}    &= v\Bigl[\frac{1}{q(q-1)}-\frac{\ln v}{q}\Bigr], \\
+\frac{dF}{dD}    &= -\frac{q-1}{qD} v^{1-q}, \\
+\frac{dF}{d\gamma}&= -\frac{q-1}{q} m v^{1-q}, \\
 \frac{dF}{dq}    &= -\Bigl[(1-q)v^{-q}\frac{dv}{dq}
                          -v^{1-q}\ln v\Bigr].
 \end{aligned}
@@ -270,17 +270,17 @@ Let $k_i=A e^{\alpha m_i}$. Then the gradient w.r.t. each natural parameter is
 $$
 \begin{aligned}
 \frac{\partial I}{\partial A}
-&= \frac{k_i}{A}\cdot\frac{g}{G}\frac{f}{F_i}h, \\[2pt]
+&= \frac{k_i}{A}\cdot\frac{g}{G}\frac{f}{F_i}h, \\
 \frac{\partial I}{\partial c}
 &= k_i\Bigl[\frac{1}{G}\frac{\partial g}{\partial c}
-          -\frac{g}{G^2}\frac{dG}{dc}\Bigr]\frac{f}{F_i}h, \\[2pt]
+          -\frac{g}{G^2}\frac{dG}{dc}\Bigr]\frac{f}{F_i}h, \\
 \frac{\partial I}{\partial p}
 &= k_i\Bigl[\frac{1}{G}\frac{\partial g}{\partial p}
-          -\frac{g}{G^2}\frac{dG}{dp}\Bigr]\frac{f}{F_i}h, \\[2pt]
+          -\frac{g}{G^2}\frac{dG}{dp}\Bigr]\frac{f}{F_i}h, \\
 \frac{\partial I}{\partial D}
 &= k_i\frac{g}{G}
    \Bigl[\frac{1}{F_i}\frac{\partial f}{\partial D}
-         -\frac{f}{F_i^2}\frac{dF_i}{dD}\Bigr]h, \\[2pt]
+         -\frac{f}{F_i^2}\frac{dF_i}{dD}\Bigr]h, \\
 \frac{\partial I}{\partial\eta}
 &= k_i\frac{g}{G}\frac{f}{F_i}\frac{\partial h}{\partial\eta}.
 \end{aligned}
@@ -350,7 +350,7 @@ The model is fit by alternating between:
 For each event $j$, compute the background probability
 
 $$
-\rho_j = \frac{\mu\,b_j}{\lambda_j},
+\rho_j = \frac{\mu b_j}{\lambda_j},
 $$
 
 assigning event $j$ to background with probability $\rho_j$ and to
@@ -365,7 +365,7 @@ The log-likelihood
 $$
 \ell(\theta)
 = \sum_{j=1}^{N}\ln\lambda_j(\theta)
-  - \int_{\text{window}}\!\lambda\,dt\,dx\,dy
+  - \int_{\text{window}}\lambda dt dx dy
 $$
 
 and its gradient are computed using renormalized kernels and
