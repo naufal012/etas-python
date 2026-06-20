@@ -172,8 +172,8 @@ With renormalization the intensity at event $j$ becomes
 
 $$
 \lambda_j
-= \mu b_j
-+ \sum_{\substack{i<j\\
+= \mu b_j +
+   \sum_{\substack{i<j\\
                  \delta t_{ij}\le T_{\max}\\
                  r_{ij}\le R_{\max}(m_i)}}
    \kappa(m_i) 
@@ -364,8 +364,8 @@ The log-likelihood
 
 $$
 \ell(\theta)
-= \sum_{j=1}^{N}\ln\lambda_j(\theta)
-  - \int_{\text{window}}\lambda dt dx dy
+= \sum_{j=1}^{N}\ln\lambda_j(\theta) -
+  \int_{\text{window}}\lambda dt dx dy
 $$
 
 and its gradient are computed using renormalized kernels and
