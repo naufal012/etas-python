@@ -173,15 +173,16 @@ With renormalization the intensity at event $j$ becomes
 $$
 \lambda_j
 = \mu b_j +
-   \sum_{i<j,\ \delta t_{ij}\le T_{\max},\ r_{ij}\le R_{\max}(m_i)}
+   \sum_{i<j}
    \kappa(m_i) 
    \frac{g(\delta t_{ij})}{G_{\text{norm}}} 
    \frac{f(r_{ij}\mid m_i)}{F_{\text{norm}}(m_i)} 
    h(z_j\mid z_i),
 $$
 
-where the sum runs only over parents $i$ surviving *both* cutoffs
-(enforced by KDTree lookups; see §5).
+where the sum runs only over parents $i<j$ that survive *both*
+truncation cutoffs ($\delta t_{ij}\le T_{\max}$ and
+$r_{ij}\le R_{\max}(m_i)$), enforced by KDTree lookups (see §5).
 
 ### 3.5  Space-Time Integral under Renormalization
 
