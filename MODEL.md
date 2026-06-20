@@ -101,12 +101,7 @@ $$
 The integral over $[0, T_{\max}]$ has the closed form
 
 $$
-\boxed{
-G_{\text{norm}}(c,p,\varepsilon_t)
-= \int_0^{T_{\max}} g(\tau)\,d\tau
-= 1 - \left(1 + \frac{T_{\max}}{c}\right)^{1-p}
-= 1 - u^{1-p},
-}
+\boxed{G_{\text{norm}}(c,p,\varepsilon_t) = \int_0^{T_{\max}}\!g(\tau)\,d\tau = 1-\left(1+\frac{T_{\max}}{c}\right)^{1-p} = 1-u^{1-p}}
 $$
 
 where $u = \big((p-1)/(c\varepsilon_t)\big)^{1/p}$.
@@ -125,12 +120,7 @@ $$
 The disk integral gives
 
 $$
-\boxed{
-F_{\text{norm}}(m_j; D,\gamma,q,\varepsilon_s)
-= \int_0^{R_{\max}}\!2\pi r\,f(r\mid m_j)\,dr
-= 1 - \left(1 + \frac{R_{\max}^2}{\sigma_j}\right)^{1-q}
-= 1 - v^{1-q},
-}
+\boxed{F_{\text{norm}}(m_j; D,\gamma,q,\varepsilon_s) = \int_0^{R_{\max}}\!2\pi r\,f(r\mid m_j)\,dr = 1-\left(1+\frac{R_{\max}^2}{\sigma_j}\right)^{1-q} = 1-v^{1-q}}
 $$
 
 where $v = \big((q-1)/(\pi\sigma_j\varepsilon_s)\big)^{1/q}$.
@@ -212,11 +202,11 @@ with $u = ((p-1)/(c\varepsilon_t))^{1/p}$:
 
 $$
 \begin{aligned}
-\ln u &= \frac{1}{p}\ln\frac{p-1}{c\varepsilon_t}, \\[4pt]
+\ln u &= \frac{1}{p}\ln\frac{p-1}{c\varepsilon_t}, \\
 \frac{du}{dc} &= -\frac{u}{pc},
 \quad
-\frac{du}{dp} = u\!\left[\frac{1}{p(p-1)} - \frac{\ln u}{p}\right], \\[8pt]
-\boxed{\frac{dG}{dc} = -\frac{p-1}{pc}\,u^{1-p}},\\[8pt]
+\frac{du}{dp} = u\!\left[\frac{1}{p(p-1)} - \frac{\ln u}{p}\right], \\
+\boxed{\frac{dG}{dc} = -\frac{p-1}{pc}\,u^{1-p}}, \\
 \boxed{\frac{dG}{dp} = u^{1-p}\ln u - (1-p)\,u^{-p}\,\frac{du}{dp}}.
 \end{aligned}
 $$
@@ -226,12 +216,12 @@ $v = ((q-1)/(\pi\sigma_j\varepsilon_s))^{1/q}$ and $\sigma_j = D e^{\gamma m_j}$
 
 $$
 \begin{aligned}
-\ln v &= \frac{1}{q}\ln\frac{q-1}{\pi\varepsilon_s} - \frac{1}{q}\ln\sigma_j, \\[4pt]
+\ln v &= \frac{1}{q}\ln\frac{q-1}{\pi\varepsilon_s} - \frac{1}{q}\ln\sigma_j, \\
 \frac{dv}{dD} &= -\frac{v}{qD},\qquad
 \frac{dv}{d\gamma} = -\frac{v\,m}{q},\qquad
-\frac{dv}{dq} = v\!\left[\frac{1}{q(q-1)} - \frac{\ln v}{q}\right], \\[8pt]
-\boxed{\frac{dF}{dD} = -\frac{q-1}{qD}\,v^{1-q}},\\[8pt]
-\boxed{\frac{dF}{d\gamma} = -\frac{q-1}{q}\,m\,v^{1-q}},\\[8pt]
+\frac{dv}{dq} = v\!\left[\frac{1}{q(q-1)} - \frac{\ln v}{q}\right], \\
+\boxed{\frac{dF}{dD} = -\frac{q-1}{qD}\,v^{1-q}}, \\
+\boxed{\frac{dF}{d\gamma} = -\frac{q-1}{q}\,m\,v^{1-q}}, \\
 \boxed{\frac{dF}{dq} = -\big[(1-q)v^{-q}\,\frac{dv}{dq} - v^{1-q}\ln v\big]}.
 \end{aligned}
 $$
@@ -253,14 +243,14 @@ is
 
 $$
 \begin{aligned}
-\frac{\partial I}{\partial A} &= \frac{k_i}{A} \cdot \frac{g}{G}\frac{f}{F_i} h, \\[4pt]
+\frac{\partial I}{\partial A} &= \frac{k_i}{A} \cdot \frac{g}{G}\frac{f}{F_i} h, \\
 \frac{\partial I}{\partial c} &=
-k_i\!\left[\frac{1}{G}\frac{\partial g}{\partial c} - \frac{g}{G^2}\frac{dG}{dc}\right]\frac{f}{F_i} h, \\[4pt]
+k_i\!\left[\frac{1}{G}\frac{\partial g}{\partial c} - \frac{g}{G^2}\frac{dG}{dc}\right]\frac{f}{F_i} h, \\
 \frac{\partial I}{\partial p} &=
-k_i\!\left[\frac{1}{G}\frac{\partial g}{\partial p} - \frac{g}{G^2}\frac{dG}{dp}\right]\frac{f}{F_i} h, \\[4pt]
+k_i\!\left[\frac{1}{G}\frac{\partial g}{\partial p} - \frac{g}{G^2}\frac{dG}{dp}\right]\frac{f}{F_i} h, \\
 \frac{\partial I}{\partial D} &=
 k_i\frac{g}{G}
-\!\left[\frac{1}{F_i}\frac{\partial f}{\partial D} - \frac{f}{F_i^2}\frac{dF_i}{dD}\right] h, \\[4pt]
+\!\left[\frac{1}{F_i}\frac{\partial f}{\partial D} - \frac{f}{F_i^2}\frac{dF_i}{dD}\right] h, \\
 \frac{\partial I}{\partial \eta} &=
 k_i\frac{g}{G}\frac{f}{F_i}\frac{\partial h}{\partial\eta}.
 \end{aligned}
