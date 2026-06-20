@@ -157,16 +157,20 @@ standard un-truncated model is recovered exactly.
 With renormalization the intensity at event $j$ becomes
 
 $$
+\begin{aligned}
 \lambda_j =
 \mu\,b_j \;+\;
-\sum_{i<j,\;\delta t_{ij}\le T_{\max},\; r_{ij}\le R_{\max}(m_i)}
+\sum_{\substack{i<j \\
+        \delta t_{ij}\le T_{\max} \\
+        r_{ij}\le R_{\max}(m_i)}}
   \kappa(m_i)\,
   \frac{g(\delta t_{ij})}{G_{\text{norm}}}\,
-  \frac{f(r_{ij} \mid m_i)}{F_{\text{norm}}(m_i)}\,
-  h(z_j \mid z_i),
+  \frac{f(r_{ij}\mid m_i)}{F_{\text{norm}}(m_i)}\,
+  h(z_j\mid z_i),
+\end{aligned}
 $$
 
-where the sums run only over parents $i$ that survive *both* the temporal and
+where the sum runs only over parents $i$ that survive *both* the temporal and
 spatial cutoffs (enforced by KDTree lookups; see §5).
 
 ### 3.5  Space-Time Integral under Renormalization
