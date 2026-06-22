@@ -11,7 +11,8 @@ from ..src.geometry import longlat2xy
 from ..src.backend import get_xp
 
 
-def rates(fit, lat_range=None, long_range=None, dimyx=None, slice_depth=None):
+def rates(fit, lat_range=None, long_range=None, dimyx=None, slice_depth=None,
+          plot=False):
     """Compute spatial seismicity rate maps from a fitted ETAS model.
 
     Parameters
@@ -24,13 +25,20 @@ def rates(fit, lat_range=None, long_range=None, dimyx=None, slice_depth=None):
         Grid dimensions. If None, auto-computed.
     slice_depth : float, optional
         For 3D models, evaluate the intensity at this specific depth.
+    plot : bool, optional
+        If True, produce a geographic map with coastlines, borders and
+        land/ocean shading using cartopy (falls back to plain matplotlib
+        if cartopy is not installed).  The returned dict includes ``'fig'``
+        and ``'axes'`` keys.
 
     Returns
     -------
     dict
-        Keys: 'x' (longitudes), 'y' (latitudes),
-        'bkgd' (background rate), 'total' (total rate),
-        'clust' (clustering coefficient), 'lamb' (conditional intensity).
+        Keys: ``'x'`` (longitudes), ``'y'`` (latitudes),
+        ``'bkgd'`` (background rate), ``'total'`` (total rate),
+        ``'clust'`` (clustering coefficient), ``'lamb'`` (conditional intensity).
+        When ``plot=True``, additionally ``'fig'`` (matplotlib Figure) and
+        ``'axes'`` (list of Axes).
     """
     from ..src.poly_integ import (
         ffun1, ffun2, gfun, kappafun, dist2_euclidean
@@ -125,37 +133,29 @@ def rates(fit, lat_range=None, long_range=None, dimyx=None, slice_depth=None):
     gy = xp.linspace(xy_bnd['y'].min(), xy_bnd['y'].max(), dimyx[0])
 
     # ------------------------------------------------------------------
-    # Vectorized rate computation: broadcast grid × events
+    # Vectorized rate computation: broadcast grid x events
     # ------------------------------------------------------------------
-    # gx shape (nx,), gy shape (ny,), x/y/m/pb shape (N,)
-    # Create 2-D grid meshes: (ny, nx)
     gx_mesh, gy_mesh = xp.meshgrid(gx, gy, indexing='ij')
-    # Flatten for broadcasting against event arrays
-    gx_flat = gx_mesh.ravel()  # (ny*nx,)
-    gy_flat = gy_mesh.ravel()  # (ny*nx,)
+    gx_flat = gx_mesh.ravel()
+    gy_flat = gy_mesh.ravel()
 
-    # Vectorized pairwise distances: (ny*nx, N)
     dx_mat = gx_flat[:, None] - x[None, :]
     dy_mat = gy_flat[:, None] - y[None, :]
     r2_mat = dx_mat ** 2 + dy_mat ** 2
 
-    # Gaussian kernel for each grid-event pair: shape (ny*nx, N)
-    sig = xp.asarray(bwd)[None, :]  # (1, N)
+    sig = xp.asarray(bwd)[None, :]
     tmp = xp.exp(-r2_mat / (2.0 * sig * sig)) / (2.0 * xp.pi * sig * sig)
 
-    # pb-weighted sum over events for each grid point
     sum1 = xp.sum(xp.asarray(pb)[None, :] * tmp, axis=1)
     sum2 = xp.sum(tmp, axis=1)
 
     bkgd_flat = sum1 / (tlength - tstart2)
     total_flat = sum2 / (tlength - tstart2)
 
-    # Conditional intensity: start with background rate
     lamb_flat = mu * bkgd_flat
 
-    # Add triggered component (still vectorized over grid points)
     for l in range(N):
-        r2_l = r2_mat[:, l]  # (ny*nx,)
+        r2_l = r2_mat[:, l]
         kappa_val = kappafun(m[l], kparam)
         g_val = gfun(tlength - float(t[l]), gparam) / G_norm
         if mver == 1:
@@ -182,25 +182,87 @@ def rates(fit, lat_range=None, long_range=None, dimyx=None, slice_depth=None):
 
         lamb_flat += kappa_val * g_val * f_val
 
-    # Clustering coefficient
     clust_flat = xp.where(sum2 > 0, 1.0 - sum1 / sum2, 0.0)
 
-    # Reshape back to (ny, nx) — note: meshgrid with indexing='ij'
-    # gives (nx, ny) shape, matching the original double loop convention
     bkgd = xp.asarray(bkgd_flat).reshape(dimyx[1], dimyx[0])
     total = xp.asarray(total_flat).reshape(dimyx[1], dimyx[0])
     clust = xp.asarray(clust_flat).reshape(dimyx[1], dimyx[0])
     lamb = xp.asarray(lamb_flat).reshape(dimyx[1], dimyx[0])
 
-    # Output coordinates in lon/lat
     out_x = np.linspace(long_range[0], long_range[1], dimyx[1])
     out_y = np.linspace(lat_range[0], lat_range[1], dimyx[0])
 
-    return {
+    result = {
         'x': out_x, 'y': out_y,
         'bkgd': bkgd, 'total': total,
         'clust': clust, 'lamb': lamb
     }
+
+    # ------------------------------------------------------------------
+    # Optional cartopy map overlay
+    # ------------------------------------------------------------------
+    if plot:
+        result.update(_make_map(out_x, out_y, bkgd, clust, lamb))
+
+    return result
+
+
+def _make_map(lon, lat, bkgd, clust, lamb):
+    """Build a 3-panel cartopy map from rate arrays.
+
+    Falls back to plain matplotlib if cartopy is not installed.
+    """
+    # Convert from GPU if needed
+    bkgd_np  = bkgd.get() if hasattr(bkgd, 'get') else bkgd
+    clust_np = clust.get() if hasattr(clust, 'get') else clust
+    lamb_np  = lamb.get() if hasattr(lamb, 'get') else lamb
+
+    try:
+        import cartopy.crs as ccrs
+        import cartopy.feature as cfeature
+        _has_cartopy = True
+    except ImportError:
+        _has_cartopy = False
+
+    import matplotlib.pyplot as plt
+
+    if _has_cartopy:
+        fig, axes = plt.subplots(1, 3, figsize=(20, 7),
+                                  subplot_kw={'projection': ccrs.PlateCarree()})
+    else:
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    titles = ['Background Rate', 'Clustering Coefficient', 'Conditional Intensity']
+    datas  = [bkgd_np, clust_np, lamb_np]
+    cmaps  = ['Reds', 'coolwarm', 'inferno']
+
+    for ax, title, data, cmap in zip(axes, titles, datas, cmaps):
+        if _has_cartopy:
+            im = ax.pcolormesh(lon, lat, data.T, cmap=cmap,
+                               transform=ccrs.PlateCarree(), shading='auto')
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+            ax.add_feature(cfeature.BORDERS,  linewidth=0.3, alpha=0.6)
+            ax.add_feature(cfeature.OCEAN,    facecolor='#e8f4f8', zorder=0)
+            ax.add_feature(cfeature.LAND,     facecolor='#f5f0e8', zorder=0)
+            gl = ax.gridlines(draw_labels=True, dms=True,
+                              x_inline=False, y_inline=False,
+                              linewidth=0.3, color='gray', alpha=0.5)
+            gl.top_labels = False
+            gl.right_labels = False
+            ax.set_extent([lon.min(), lon.max(), lat.min(), lat.max()])
+        else:
+            im = ax.pcolormesh(lon, lat, data.T, cmap=cmap, shading='auto')
+            ax.set_xlabel('Longitude')
+            ax.set_ylabel('Latitude')
+
+        ax.set_title(title, fontsize=11)
+        plt.colorbar(im, ax=ax, shrink=0.65)
+
+    study_label = ""
+    fig.suptitle(f'ETAS Spatial Rate Maps{study_label}', fontsize=13, fontweight='bold')
+    fig.tight_layout()
+
+    return {'fig': fig, 'axes': axes}
 
 
 def probs(fit):
