@@ -378,7 +378,8 @@ def nn_dist(x, y, k=5):
     tree = _make_kdtree(coords)
     # On GPU the query input must also be a CuPy array.
     from .backend import get_engine
-    if get_engine() == 'gpu':
+    engine = get_engine()
+    if engine == 'gpu':
         import cupy as cp
         query_coords = cp.asarray(coords)
     else:
@@ -386,4 +387,5 @@ def nn_dist(x, y, k=5):
     # query k_eff+1 because the nearest neighbour of a point is itself
     dists, _ = tree.query(query_coords, k=k_eff + 1)
     # dists[:, 0] ≈ 0 (self), dists[:, k_eff] is the k-th neighbour
-    return np.asarray(dists)[:, k_eff]
+    result = dists[:, k_eff]
+    return result.get() if engine == 'gpu' else result
