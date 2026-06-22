@@ -20,6 +20,13 @@ from ..src.backend import get_xp as _get_xp
 
 
 def _xp():
+    """Active array module (NumPy on CPU, CuPy on GPU).
+
+    Catalog construction itself always runs on the CPU because it mixes
+    pandas DataFrames, shapely polygons and datetime parsing — none of which
+    interoperate with CuPy arrays.  Only the final ``revents`` output is
+    transferred to the active backend so it is ready for the fitting loop.
+    """
     return _get_xp()
 
 try:
@@ -100,6 +107,34 @@ def catalog(data, time_begin=None, study_start=None,
     -------
     Catalog
         The constructed catalog object.
+    """
+    # Catalog construction mixes pandas DataFrames, shapely polygons and
+    # datetime parsing — all CPU-only.  Force the backend to CPU during
+    # construction regardless of the user's chosen engine, so roundoff_err(),
+    # longlat2xy() and nn_dist() operate on plain numpy arrays here.  The
+    # final revents array is transferred to the active backend at the end.
+    from ..src.backend import set_engine, get_engine
+    saved_engine = get_engine()
+    set_engine('cpu')
+    try:
+        return _catalog_impl(
+            data, time_begin, study_start, study_end, study_length,
+            lat_range, long_range, region_poly, mag_threshold,
+            flatmap, dist_unit, roundoff, tz, saved_engine)
+    finally:
+        set_engine(saved_engine)
+
+
+def _catalog_impl(data, time_begin, study_start,
+                  study_end, study_length,
+                  lat_range, long_range,
+                  region_poly, mag_threshold,
+                  flatmap, dist_unit,
+                  roundoff, tz, target_engine):
+    """CPU-only catalog construction.  See :func:`catalog` for the public API.
+
+    ``target_engine`` is restored by the caller after construction; the final
+    ``revents`` array is placed on that backend via ``get_xp()``.
     """
     # Validate input
     data = data.copy()
