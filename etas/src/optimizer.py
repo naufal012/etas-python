@@ -41,7 +41,13 @@ def _precompute(tht, revents, mver, is_3d, eps_t, eps_s, eps_z, Z_max, tau_cut, 
     """
     xp = _xp()
     param = tht ** 2          # natural parameters
-    m = np.asarray(revents[:, 3]) if hasattr(revents, '__array__') else revents[:, 3]
+    # revents may be on either backend; extract column 3 (magnitudes) to numpy.
+    if hasattr(revents, 'get'):
+        m = revents[:, 3].get()
+    elif hasattr(revents, '__array__') and not isinstance(revents, np.ndarray):
+        m = np.asarray(revents[:, 3])
+    else:
+        m = revents[:, 3]
 
     norms = compute_all_norms(param, m, mver, eps_t=eps_t, eps_s=eps_s,
                               eps_z=eps_z, Z_max=Z_max)
@@ -51,11 +57,15 @@ def _precompute(tht, revents, mver, is_3d, eps_t, eps_s, eps_z, Z_max, tau_cut, 
     use_kd = ((tau_cut is not None and np.isfinite(tau_cut))
               or (r_cut is not None and np.isfinite(r_cut)))
     if use_kd:
-        # NeighborIndex needs CPU numpy arrays for coordinates/times
+        # NeighborIndex requires CPU numpy arrays; extract from whichever backend.
+        if hasattr(revents, 'get'):
+            rev_cpu = revents.get()
+        else:
+            rev_cpu = revents
         nbr_index = NeighborIndex(
-            np.asarray(revents[:, 1]),
-            np.asarray(revents[:, 2]),
-            np.asarray(revents[:, 0]))
+            np.asarray(rev_cpu[:, 1]),
+            np.asarray(rev_cpu[:, 2]),
+            np.asarray(rev_cpu[:, 0]))
         nbr_index.set_cutoffs(tau_cut, r_cut)
         nbr_lists = nbr_index.query_all(tau_cut, r_cut)
     else:
@@ -83,7 +93,8 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
                                           eps_t, eps_s, eps_z, Z_max,
                                           tau_cut, r_cut)
 
-    revents_np = np.asarray(revents) if not isinstance(revents, np.ndarray) else revents
+    revents_np = revents.get() if hasattr(revents, 'get') else (
+        revents if isinstance(revents, np.ndarray) else np.asarray(revents))
     N = revents_np.shape[0]
     t = xp.asarray(revents_np[:, 0])
     x = xp.asarray(revents_np[:, 1])
@@ -93,7 +104,8 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     bk = xp.asarray(revents_np[:, 5])
     z = xp.asarray(revents_np[:, 8]) if revents_np.shape[1] > 8 else None
 
-    rpoly_np = np.asarray(rpoly) if not isinstance(rpoly, np.ndarray) else rpoly
+    rpoly_np = rpoly.get() if hasattr(rpoly, 'get') else (
+        rpoly if isinstance(rpoly, np.ndarray) else np.asarray(rpoly))
     px = xp.asarray(rpoly_np[:, 0])
     py = xp.asarray(rpoly_np[:, 1])
     tstart2 = tperiod[0]
@@ -136,7 +148,8 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
                                           eps_t, eps_s, eps_z, Z_max,
                                           tau_cut, r_cut)
 
-    revents_np = np.asarray(revents) if not isinstance(revents, np.ndarray) else revents
+    revents_np = revents.get() if hasattr(revents, 'get') else (
+        revents if isinstance(revents, np.ndarray) else np.asarray(revents))
     N = revents_np.shape[0]
     dimparam = len(tht)
     t = xp.asarray(revents_np[:, 0])
@@ -147,7 +160,8 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     bk = xp.asarray(revents_np[:, 5])
     z = xp.asarray(revents_np[:, 8]) if revents_np.shape[1] > 8 else None
 
-    rpoly_np = np.asarray(rpoly) if not isinstance(rpoly, np.ndarray) else rpoly
+    rpoly_np = rpoly.get() if hasattr(rpoly, 'get') else (
+        rpoly if isinstance(rpoly, np.ndarray) else np.asarray(rpoly))
     px = xp.asarray(rpoly_np[:, 0])
     py = xp.asarray(rpoly_np[:, 1])
     tstart2 = tperiod[0]

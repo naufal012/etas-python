@@ -160,7 +160,7 @@ def rates(fit, lat_range=None, long_range=None, dimyx=None, slice_depth=None):
         g_val = gfun(tlength - float(t[l]), gparam) / G_norm
         if mver == 1:
             f_val = ffun1(r2_l, m[l], fparam)
-            F_sub = xp.asarray(np.asarray(F_norm))[l]
+            F_sub = xp.asarray(F_norm)[l]
             f_val = f_val / F_sub
         else:
             f_val = ffun2(r2_l, m[l], fparam)

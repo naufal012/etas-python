@@ -642,7 +642,8 @@ def integ_j(theta, j, t, x, y, m, px, py, tstart2, tlength,
         w = [gamma, D, q, m[j]]
         si = poly_integ(fr, w, px, py, x[j], y[j])
         if F_norm is not None:
-            F_at = np.asarray(F_norm)[j] if not np.isscalar(F_norm) else F_norm
+            # Index a single scalar — float() works for both numpy and cupy.
+            F_at = float(F_norm[j]) if not np.isscalar(F_norm) else float(F_norm)
             si = si / F_at
 
         sk = A * xp.exp(alpha * m[j])
@@ -752,11 +753,11 @@ def integ_j_grad(theta, j, t, x, y, m, px, py, tstart2, tlength,
 
         # Renormalize spatial + derivatives.
         if F_norm is not None:
-            F_at = float(np.asarray(F_norm)[j])
+            F_at = float(F_norm[j])
             dF_dD, dF_dq, dF_dgamma = F_grad
-            dF_dD_j = float(np.asarray(dF_dD)[j]) if dF_dD is not None else 0.0
-            dF_dq_j = float(np.asarray(dF_dq)[j]) if dF_dq is not None else 0.0
-            dF_dg_j = float(np.asarray(dF_dgamma)[j]) if dF_dgamma is not None else 0.0
+            dF_dD_j = float(dF_dD[j]) if dF_dD is not None else 0.0
+            dF_dq_j = float(dF_dq[j]) if dF_dq is not None else 0.0
+            dF_dg_j = float(dF_dgamma[j]) if dF_dgamma is not None else 0.0
             invF = 1.0 / F_at
             si_tot = si * invF
             si_tot_dD = (sid * F_at - si * dF_dD_j) * invF * invF
@@ -884,8 +885,12 @@ def lambda_x(t_val, x_val, y_val, theta, t, x, y, m,
 
         part2 = part2 / G_norm
         if F_norm is not None:
-            # F_norm is indexed by full catalog; subset to the surviving mask.
-            F_sub = np.asarray(F_norm)[np.asarray(mask)]
+            # F_norm and mask may be on either backend.
+            if _is_xp_array(F_norm, xp):
+                F_sub = F_norm[mask] if _is_xp_array(mask, xp) else F_norm[np.asarray(mask)]
+            else:
+                mask_np = mask.get() if hasattr(mask, 'get') else mask
+                F_sub = np.asarray(F_norm)[np.asarray(mask_np)]
             part3 = part3 / xp.asarray(F_sub)
         if is_3d:
             from .backend import get_special

@@ -250,8 +250,15 @@ def decluster(theta, rbwd, revents, rpoly, tperiod, ndiv, mver,
                 if nbr_index is not None:
                     parent_pos = idx
                 else:
-                    parent_pos = np.arange(i, dtype=np.intp)[np.asarray(mask)]
-                F_sub = xp.asarray(np.asarray(F_norm)[parent_pos])
+                    # mask may be a CuPy boolean array; ensure numpy for indexing.
+                    mask_np = mask.get() if hasattr(mask, 'get') else mask
+                    parent_pos = np.arange(i, dtype=np.intp)[mask_np]
+                # F_norm may be on either backend; get it as numpy for indexing,
+                # then convert back to xp so part3 division stays on-GPU.
+                if hasattr(F_norm, 'get'):
+                    F_sub = xp.asarray(F_norm[parent_pos])
+                else:
+                    F_sub = xp.asarray(np.asarray(F_norm)[parent_pos])
                 part3 = part3 / F_sub
             if is_3d:
                 from .backend import get_special
