@@ -33,6 +33,7 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+!comparison.ipynb
 
 # Project-specific
 *.pkl
