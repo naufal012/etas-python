@@ -15,10 +15,14 @@ from .catalog import Catalog
 from ..src.decluster import decluster
 from ..src.optimizer import etasfit
 from ..src.geometry import nn_dist
-from ..src.backend import set_engine, get_engine
+from ..src.backend import set_engine, get_engine, get_xp as _get_xp
 from ..src.renorm import (temporal_cutoff, spatial_cutoff,
                           compute_all_norms)
 from ..src.neighbors import NeighborIndex
+
+
+def _xp():
+    return _get_xp()
 
 
 @dataclass
@@ -137,6 +141,8 @@ def etas(catalog_obj, param0=None, bwd=None, nnp=5, bwm=0.05,
         if eps_s is None:
             eps_s = epsilon
     set_engine(engine)
+
+    xp = _xp()
     
     ptm = time.time()
 

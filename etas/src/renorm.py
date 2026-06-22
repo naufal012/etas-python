@@ -21,6 +21,11 @@ Reference: see MODEL.md, §2 (Renormalization Derivation) and §3 (Gradients).
 """
 
 import numpy as np
+from .backend import get_xp as _get_xp
+
+
+def _xp():
+    return _get_xp()
 
 
 # ---------------------------------------------------------------------------
@@ -35,8 +40,9 @@ def _safe_pow(base, expo):
     producing complex garbage for fractional exponents.  Clamp at the eps
     level rather than zero so ``log`` / fractional powers stay well-defined.
     """
-    base = np.asarray(base, dtype=np.float64)
-    return np.where(base > 1.0, base, 1.0) ** expo if base.ndim else (max(base, 1.0)) ** expo
+    xp = _xp()
+    base = xp.asarray(base, dtype=np.float64)
+    return xp.where(base > 1.0, base, 1.0) ** expo if base.ndim else (max(base, 1.0)) ** expo
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +125,7 @@ def temporal_norm_grad(c, p, eps_t=None, T_max=None):
         ``(G_norm, dG/dc, dG/dp)``.  When un-truncated all three are
         ``(1.0, 0.0, 0.0)``.
     """
+    xp = _xp()
     if T_max is None:
         T_max = temporal_cutoff(c, p, eps_t)
     if not np.isfinite(T_max) or p <= 1.0:
@@ -129,12 +136,12 @@ def temporal_norm_grad(c, p, eps_t=None, T_max=None):
         base = 1.0 + T_max / c
         Gn = 1.0 - base ** (1.0 - p)
         dGn_dc = (1.0 - p) * (base ** (-p)) * T_max / (c * c)
-        dGn_dp = (base ** (1.0 - p)) * np.log(base)
+        dGn_dp = float(xp.log(base)) * base ** (1.0 - p)
         return float(Gn), float(dGn_dc), float(dGn_dp)
 
     # u = ((p-1)/(c*eps_t))^(1/p)  ==  1 + T_max/c
     u = ((p - 1.0) / (c * eps_t)) ** (1.0 / p)
-    log_u = np.log(u)
+    log_u = float(xp.log(u))
     Gn = 1.0 - u ** (1.0 - p)
     # Total derivatives through the cutoff constraint.
     dGn_dc = -(p - 1.0) * (u ** (1.0 - p)) / (p * c)
@@ -159,7 +166,8 @@ def temporal_norm_grad(c, p, eps_t=None, T_max=None):
 
 def _sigma(D, gamma, m_j):
     """Spatial scale ``sigma_j = D * exp(gamma * m_j)``.  Accepts scalar or array."""
-    return D * np.exp(gamma * np.asarray(m_j, dtype=np.float64))
+    xp = _xp()
+    return D * xp.exp(gamma * xp.asarray(m_j, dtype=np.float64))
 
 
 def spatial_cutoff(D, gamma, q, eps_s, m_j):
@@ -179,24 +187,25 @@ def spatial_cutoff(D, gamma, q, eps_s, m_j):
     np.ndarray (or float)
         ``R_max`` per event.  ``+inf`` where un-truncated.
     """
-    m_j = np.asarray(m_j, dtype=np.float64)
-    scalar_in = (m_j.ndim == 0)
-    m_j = np.atleast_1d(m_j)
+    xp = _xp()
+    m_j = xp.asarray(m_j, dtype=np.float64)
+    scalar_in = not hasattr(m_j, 'ndim') or m_j.ndim == 0
+    m_j = xp.atleast_1d(m_j)
 
     if eps_s is None or not np.isfinite(eps_s) or eps_s <= 0.0:
-        out = np.full(m_j.shape, np.inf)
+        out = xp.full(m_j.shape, xp.inf)
         return float(out[0]) if scalar_in else out
     if q <= 1.0:
         # Invalid kernel; return +inf (no truncation), letting the optimizer
         # back off from the invalid parameter region.
-        out = np.full(m_j.shape, np.inf)
+        out = xp.full(m_j.shape, xp.inf)
         return float(out[0]) if scalar_in else out
 
     sig = _sigma(D, gamma, m_j)
-    inner = (q - 1.0) / (np.pi * sig * eps_s)
+    inner = (q - 1.0) / (xp.pi * sig * eps_s)
     R2 = sig * (inner ** (1.0 / q) - 1.0)
-    R2 = np.where(R2 > 0.0, R2, 0.0)
-    out = np.sqrt(R2)
+    R2 = xp.where(R2 > 0.0, R2, 0.0)
+    out = xp.sqrt(R2)
     return float(out[0]) if scalar_in else out
 
 
@@ -208,18 +217,19 @@ def spatial_norm(D, gamma, q, m_j, eps_s=None, R_max=None):
 
     Closed form: ``F_norm(m_j) = 1 - (1 + R_max^2/sigma_j)^(1 - q)``.
     """
-    m_j = np.asarray(m_j, dtype=np.float64)
-    scalar_in = (m_j.ndim == 0)
-    m_j = np.atleast_1d(m_j)
+    xp = _xp()
+    m_j = xp.asarray(m_j, dtype=np.float64)
+    scalar_in = not hasattr(m_j, 'ndim') or m_j.ndim == 0
+    m_j = xp.atleast_1d(m_j)
 
     if R_max is None:
         R_max = spatial_cutoff(D, gamma, q, eps_s, m_j)
-    R_max = np.asarray(R_max, dtype=np.float64)
+    R_max = xp.asarray(R_max, dtype=np.float64)
 
-    finite = np.isfinite(R_max)
+    finite = xp.isfinite(R_max)
     sig = _sigma(D, gamma, m_j)
-    out = np.ones(m_j.shape, dtype=np.float64)
-    if np.any(finite):
+    out = xp.ones(m_j.shape, dtype=np.float64)
+    if xp.any(finite):
         R2 = R_max[finite] ** 2
         base = 1.0 + R2 / sig[finite]
         out[finite] = 1.0 - base ** (1.0 - q)
@@ -250,33 +260,34 @@ def spatial_norm_grad(D, gamma, q, m_j, eps_s=None, R_max=None):
         ``(F_norm, dF/dD, dF/dq, dF/dgamma)`` each with the same shape as
         ``m_j``.  Zeros where un-truncated.
     """
-    m_j = np.asarray(m_j, dtype=np.float64)
-    scalar_in = (m_j.ndim == 0)
-    m_j = np.atleast_1d(m_j)
+    xp = _xp()
+    m_j = xp.asarray(m_j, dtype=np.float64)
+    scalar_in = not hasattr(m_j, 'ndim') or m_j.ndim == 0
+    m_j = xp.atleast_1d(m_j)
 
     if R_max is None:
         R_max = spatial_cutoff(D, gamma, q, eps_s, m_j)
-    R_max = np.asarray(R_max, dtype=np.float64)
+    R_max = xp.asarray(R_max, dtype=np.float64)
     if q <= 1.0:
         # Invalid kernel boundary; return identity with zero gradients.
         N = len(m_j)
         if scalar_in:
             return 1.0, 0.0, 0.0, 0.0
-        return (np.ones(N), np.zeros(N), np.zeros(N), np.zeros(N))
+        return (xp.ones(N), xp.zeros(N), xp.zeros(N), xp.zeros(N))
 
-    finite = np.isfinite(R_max)
+    finite = xp.isfinite(R_max)
 
-    F = np.ones(m_j.shape, dtype=np.float64)
-    dF_dD = np.zeros(m_j.shape, dtype=np.float64)
-    dF_dq = np.zeros(m_j.shape, dtype=np.float64)
-    dF_dg = np.zeros(m_j.shape, dtype=np.float64)
+    F = xp.ones(m_j.shape, dtype=np.float64)
+    dF_dD = xp.zeros(m_j.shape, dtype=np.float64)
+    dF_dq = xp.zeros(m_j.shape, dtype=np.float64)
+    dF_dg = xp.zeros(m_j.shape, dtype=np.float64)
 
-    if np.any(finite) and eps_s is not None and eps_s > 0.0:
+    if xp.any(finite) and eps_s is not None and eps_s > 0.0:
         m_f = m_j[finite]
         sig_f = _sigma(D, gamma, m_f)
         # v = ((q-1)/(pi*sig*eps))^(1/q)  ==  1 + R^2/sig
-        v = ((q - 1.0) / (np.pi * sig_f * eps_s)) ** (1.0 / q)
-        log_v = np.log(v)
+        v = ((q - 1.0) / (xp.pi * sig_f * eps_s)) ** (1.0 / q)
+        log_v = xp.log(v)
         v_1mq = v ** (1.0 - q)          # v^(1-q)
         F_f = 1.0 - v_1mq
 
@@ -371,7 +382,8 @@ def compute_all_norms(theta_param, m, mver, eps_t=None, eps_s=None,
         ``H_grad``     — dH/deta
         ``R2_over_sig``— precomputed ``R_max^2/sigma_j`` (handy, ndarray (N,))
     """
-    tp = np.asarray(theta_param, dtype=np.float64)
+    xp = _xp()
+    tp = xp.asarray(theta_param, dtype=np.float64)
     c = tp[2]
     p = tp[4]
     D = tp[5]
@@ -392,17 +404,17 @@ def compute_all_norms(theta_param, m, mver, eps_t=None, eps_s=None,
         Fn, dFn_dD, dFn_dq, dFn_dg = spatial_norm_grad(D, gamma, q, m,
                                                         eps_s=eps_s, R_max=R_max)
         sig = _sigma(D, gamma, m)
-        R2_over_sig = np.where(np.isfinite(R_max), R_max ** 2 / sig, 0.0)
+        R2_over_sig = xp.where(xp.isfinite(R_max), R_max ** 2 / sig, 0.0)
     else:
         # mver=2 (Gaussian): renormalization is handled by the Gaussian CDF
         # inside the polygon integral, not here.  Return identity constants.
         N = len(m)
-        R_max = np.full(N, np.inf)
-        Fn = np.ones(N)
-        dFn_dD = np.zeros(N)
-        dFn_dq = np.zeros(N)
-        dFn_dg = np.zeros(N)
-        R2_over_sig = np.zeros(N)
+        R_max = xp.full(N, xp.inf)
+        Fn = xp.ones(N)
+        dFn_dD = xp.zeros(N)
+        dFn_dq = xp.zeros(N)
+        dFn_dg = xp.zeros(N)
+        R2_over_sig = xp.zeros(N)
 
     # Depth
     Hn, dHn_deta = 1.0, 0.0

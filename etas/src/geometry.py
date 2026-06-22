@@ -6,8 +6,33 @@ using numpy, scipy, and shapely.
 """
 
 import numpy as np
-from scipy.spatial import KDTree
 from shapely.geometry import Polygon, Point
+
+
+def _make_kdtree(coords):
+    """Build a KDTree on *coords* using the active backend (CPU or GPU).
+
+    Shared factory used by both this module and ``neighbors.py`` so that
+    the tree backend is always consistent with ``set_engine()``.
+    """
+    from .backend import get_engine
+
+    engine = get_engine()
+    if engine == 'gpu':
+        import cupy as cp
+        from cupyx.scipy.spatial import KDTree
+        if not isinstance(coords, cp.ndarray):
+            coords = cp.asarray(coords)
+        return KDTree(coords)
+    else:
+        from scipy.spatial import KDTree as _KDTree
+        return _KDTree(np.asarray(coords, dtype=np.float64))
+
+
+def _get_xp():
+    """Get the active array module via the backend dispatcher."""
+    from .backend import get_xp
+    return get_xp()
 
 
 # ---------------------------------------------------------------------------
@@ -29,10 +54,11 @@ def decimal_places(x):
     np.ndarray of int
         Number of decimal digits for every element.
     """
-    x = np.asarray(x, dtype=float).ravel()
+    xp = _get_xp()
+    x = xp.asarray(x, dtype=float).ravel()
     result = np.zeros(len(x), dtype=int)
     for i, val in enumerate(x):
-        s = f"{val:.15g}"          # full-precision string, no trailing zeros
+        s = f"{float(val):.15g}"          # full-precision string, no trailing zeros
         if '.' in s:
             result[i] = len(s.split('.')[1])
         else:
@@ -61,10 +87,11 @@ def roundoff_err(x):
     np.ndarray
         Jittered coordinates.
     """
-    x = np.asarray(x, dtype=float).ravel()
+    xp = _get_xp()
+    x = xp.asarray(x, dtype=float).ravel()
     dp = decimal_places(x)
     noise = np.random.uniform(-0.5, 0.5, size=len(x)) * (10.0 ** (-dp))
-    return x + noise
+    return xp.asarray(x) + xp.asarray(noise)
 
 
 # ---------------------------------------------------------------------------
@@ -125,15 +152,16 @@ def longlat2xy(long, lat, region_poly, dist_unit='degree'):
         ``'y'``  – projected y coordinates (np.ndarray)
         ``'region_win'`` – projected boundary (shapely Polygon)
     """
-    long = np.asarray(long, dtype=float)
-    lat = np.asarray(lat, dtype=float)
+    xp = _get_xp()
+    long = xp.asarray(long, dtype=float)
+    lat = xp.asarray(lat, dtype=float)
     
     # Handle both dict and shapely Polygon for region_poly
     if isinstance(region_poly, dict):
-        poly_long = np.asarray(region_poly['long'])
-        poly_lat = np.asarray(region_poly['lat'])
+        poly_long = xp.asarray(region_poly['long'])
+        poly_lat = xp.asarray(region_poly['lat'])
         from shapely.geometry import Polygon
-        poly_obj = Polygon(np.column_stack([poly_long, poly_lat]))
+        poly_obj = Polygon(np.column_stack([np.asarray(poly_long), np.asarray(poly_lat)]))
     else:
         poly_obj = region_poly
         poly_coords = np.array(poly_obj.exterior.coords)
@@ -143,7 +171,7 @@ def longlat2xy(long, lat, region_poly, dist_unit='degree'):
     if dist_unit == 'degree':
         centroid = poly_obj.centroid
         cx, cy = centroid.x, centroid.y
-        cos_cy = np.cos(cy * np.pi / 180.0)
+        cos_cy = xp.cos(cy * xp.pi / 180.0)
 
         x = cos_cy * (long - cx)
         y = lat - cy
@@ -152,16 +180,16 @@ def longlat2xy(long, lat, region_poly, dist_unit='degree'):
         py = poly_lat - cy
 
     elif dist_unit == 'km':
-        x = 111.320 * np.cos(lat / 180.0 * np.pi) * long
+        x = 111.320 * xp.cos(lat / 180.0 * xp.pi) * long
         y = 110.574 * lat
 
-        px = 111.320 * np.cos(poly_lat / 180.0 * np.pi) * poly_long
+        px = 111.320 * xp.cos(poly_lat / 180.0 * xp.pi) * poly_long
         py = 110.574 * poly_lat
 
     else:
         raise ValueError(f"dist_unit must be 'degree' or 'km', got '{dist_unit}'")
 
-    region_win = Polygon(np.column_stack([px, py]))
+    region_win = Polygon(np.column_stack([np.asarray(px), np.asarray(py)]))
 
     return {'x': x, 'y': y, 'region_win': region_win}
 
@@ -188,28 +216,29 @@ def xy2longlat(x, y, region_poly, dist_unit='degree'):
         ``'long'`` – longitude (np.ndarray)
         ``'lat'``  – latitude  (np.ndarray)
     """
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
+    xp = _get_xp()
+    x = xp.asarray(x, dtype=float)
+    y = xp.asarray(y, dtype=float)
 
     if isinstance(region_poly, dict):
-        poly_long = np.asarray(region_poly['long'])
-        poly_lat = np.asarray(region_poly['lat'])
+        poly_long = xp.asarray(region_poly['long'])
+        poly_lat = xp.asarray(region_poly['lat'])
         from shapely.geometry import Polygon
-        poly_obj = Polygon(np.column_stack([poly_long, poly_lat]))
+        poly_obj = Polygon(np.column_stack([np.asarray(poly_long), np.asarray(poly_lat)]))
     else:
         poly_obj = region_poly
 
     if dist_unit == 'degree':
         centroid = poly_obj.centroid
         cx, cy = centroid.x, centroid.y
-        cos_cy = np.cos(cy * np.pi / 180.0)
+        cos_cy = xp.cos(cy * xp.pi / 180.0)
 
         lat = y + cy
         long = x / cos_cy + cx
 
     elif dist_unit == 'km':
         lat = y / 110.574
-        long = x / (111.320 * np.cos(lat / 180.0 * np.pi))
+        long = x / (111.320 * xp.cos(lat / 180.0 * xp.pi))
 
     else:
         raise ValueError(f"dist_unit must be 'degree' or 'km', got '{dist_unit}'")
@@ -263,21 +292,22 @@ def polygon_centroid(px, py):
     tuple of float
         ``(cx, cy)``
     """
-    px = np.asarray(px, dtype=float)
-    py = np.asarray(py, dtype=float)
+    xp = _get_xp()
+    px = xp.asarray(px, dtype=float)
+    py = xp.asarray(py, dtype=float)
     n = len(px)
     A = 0.0
     cx = 0.0
     cy = 0.0
     for i in range(n):
         j = (i + 1) % n
-        cross = px[i] * py[j] - px[j] * py[i]
+        cross = float(px[i]) * float(py[j]) - float(px[j]) * float(py[i])
         A += cross
-        cx += (px[i] + px[j]) * cross
-        cy += (py[i] + py[j]) * cross
+        cx += (float(px[i]) + float(px[j])) * cross
+        cy += (float(py[i]) + float(py[j])) * cross
     A *= 0.5
     if A == 0:
-        return (np.mean(px), np.mean(py))
+        return (float(xp.mean(px)), float(xp.mean(py)))
     cx /= (6.0 * A)
     cy /= (6.0 * A)
     return (cx, cy)
@@ -334,6 +364,7 @@ def nn_dist(x, y, k=5):
     np.ndarray of float, shape (N,)
         Distance to the k-th nearest neighbour for every point.
     """
+    xp = _get_xp()
     x = np.asarray(x, dtype=float).ravel()
     y = np.asarray(y, dtype=float).ravel()
     coords = np.column_stack([x, y])
@@ -344,8 +375,8 @@ def nn_dist(x, y, k=5):
     if k_eff < 1:
         return np.zeros(n)
 
-    tree = KDTree(coords)
+    tree = _make_kdtree(coords)
     # query k_eff+1 because the nearest neighbour of a point is itself
     dists, _ = tree.query(coords, k=k_eff + 1)
     # dists[:, 0] ≈ 0 (self), dists[:, k_eff] is the k-th neighbour
-    return dists[:, k_eff]
+    return np.asarray(dists)[:, k_eff]

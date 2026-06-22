@@ -353,7 +353,10 @@ def lambda_j_grad(theta, j, t, x, y, z, m, bk, tau_cut, r_cut,
 
                 F_at = None
                 if F_norm is not None:
-                    F_at = np.asarray(F_norm, dtype=np.float64)[idx]
+                    if _is_xp_array(F_norm, xp):
+                        F_at = xp.asarray(F_norm)[idx]
+                    else:
+                        F_at = np.asarray(F_norm, dtype=np.float64)[idx]
                     # if we masked above, F_at may need the same mask; safer
                     # to recompute via lookup using the surviving mi values.
                 if F_norm is not None and F_at is not None and F_at.shape[0] != part3.shape[0]:

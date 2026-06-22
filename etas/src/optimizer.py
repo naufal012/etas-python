@@ -21,6 +21,11 @@ import sys
 
 from .renorm import compute_all_norms
 from .neighbors import NeighborIndex
+from .backend import get_xp as _get_xp
+
+
+def _xp():
+    return _get_xp()
 
 
 def _norm(x):
@@ -34,17 +39,23 @@ def _precompute(tht, revents, mver, is_3d, eps_t, eps_s, eps_z, Z_max, tau_cut, 
     Returns ``(norms, nbr_index, nbr_lists)``.  ``nbr_index`` is None when no
     cutoffs are active (so callers can skip KDTree work entirely).
     """
+    xp = _xp()
     param = tht ** 2          # natural parameters
-    m = revents[:, 3]
+    m = np.asarray(revents[:, 3]) if hasattr(revents, '__array__') else revents[:, 3]
 
     norms = compute_all_norms(param, m, mver, eps_t=eps_t, eps_s=eps_s,
                               eps_z=eps_z, Z_max=Z_max)
 
     # Build a neighbor index only when at least one cutoff is finite.
+    # Use numpy for the isfinite check (scalar, not data-dependent).
     use_kd = ((tau_cut is not None and np.isfinite(tau_cut))
               or (r_cut is not None and np.isfinite(r_cut)))
     if use_kd:
-        nbr_index = NeighborIndex(revents[:, 1], revents[:, 2], revents[:, 0])
+        # NeighborIndex needs CPU numpy arrays for coordinates/times
+        nbr_index = NeighborIndex(
+            np.asarray(revents[:, 1]),
+            np.asarray(revents[:, 2]),
+            np.asarray(revents[:, 0]))
         nbr_index.set_cutoffs(tau_cut, r_cut)
         nbr_lists = nbr_index.query_all(tau_cut, r_cut)
     else:
@@ -64,26 +75,27 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     """
     from .lambda_funcs import lambda_j, integ_j
 
+    xp = _xp()
+
     if norms is None or nbr_lists is None:
         Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
         norms, _, nbr_lists = _precompute(tht, revents, mver, is_3d,
                                           eps_t, eps_s, eps_z, Z_max,
                                           tau_cut, r_cut)
 
-    N = revents.shape[0]
-    t = revents[:, 0]
-    x = revents[:, 1]
-    y = revents[:, 2]
-    m = revents[:, 3]
-    flag = revents[:, 4].astype(int)
-    bk = revents[:, 5]
-    if revents.shape[1] > 8:
-        z = revents[:, 8]
-    else:
-        z = None
+    revents_np = np.asarray(revents) if not isinstance(revents, np.ndarray) else revents
+    N = revents_np.shape[0]
+    t = xp.asarray(revents_np[:, 0])
+    x = xp.asarray(revents_np[:, 1])
+    y = xp.asarray(revents_np[:, 2])
+    m = xp.asarray(revents_np[:, 3])
+    flag = xp.asarray(revents_np[:, 4]).astype(int)
+    bk = xp.asarray(revents_np[:, 5])
+    z = xp.asarray(revents_np[:, 8]) if revents_np.shape[1] > 8 else None
 
-    px = rpoly[:, 0]
-    py = rpoly[:, 1]
+    rpoly_np = np.asarray(rpoly) if not isinstance(rpoly, np.ndarray) else rpoly
+    px = xp.asarray(rpoly_np[:, 0])
+    py = xp.asarray(rpoly_np[:, 1])
     tstart2 = tperiod[0]
     tlength = tperiod[1]
     Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
@@ -92,20 +104,20 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     fv2 = 0.0
 
     for j in range(N):
-        if flag[j] == 1:
+        if int(flag[j]) == 1:
             nbr_j = nbr_lists[j] if nbr_lists is not None else None
             s = lambda_j(tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
                          mver, is_3d, tperiod, norms=norms, nbr_idx=nbr_j)
             if s > 1.0e-25:
-                fv1 += math.log(s)
+                fv1 += math.log(float(s))
             else:
                 fv1 -= 100.0
         # integ_j does not need neighbor pruning (polygon integral is exact).
-        z_j = z[j] if is_3d else None
-        fv2 += integ_j(tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
-                       is_3d=is_3d, norms=norms, z_j=z_j, Z_max=Z_max)
+        z_j = float(z[j]) if is_3d else None
+        fv2 += float(integ_j(tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
+                             is_3d=is_3d, norms=norms, z_j=z_j, Z_max=Z_max))
 
-    fv2 += tht[0] * tht[0] * integ0
+    fv2 += float(tht[0]) * float(tht[0]) * integ0
 
     return -fv1 + fv2
 
@@ -116,59 +128,61 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     """Minus log-likelihood and its gradient."""
     from .lambda_funcs import lambda_j_grad, integ_j_grad
 
+    xp = _xp()
+
     if norms is None or nbr_lists is None:
         Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
         norms, _, nbr_lists = _precompute(tht, revents, mver, is_3d,
                                           eps_t, eps_s, eps_z, Z_max,
                                           tau_cut, r_cut)
 
-    N = revents.shape[0]
+    revents_np = np.asarray(revents) if not isinstance(revents, np.ndarray) else revents
+    N = revents_np.shape[0]
     dimparam = len(tht)
-    t = revents[:, 0]
-    x = revents[:, 1]
-    y = revents[:, 2]
-    m = revents[:, 3]
-    flag = revents[:, 4].astype(int)
-    bk = revents[:, 5]
-    if revents.shape[1] > 8:
-        z = revents[:, 8]
-    else:
-        z = None
+    t = xp.asarray(revents_np[:, 0])
+    x = xp.asarray(revents_np[:, 1])
+    y = xp.asarray(revents_np[:, 2])
+    m = xp.asarray(revents_np[:, 3])
+    flag = xp.asarray(revents_np[:, 4]).astype(int)
+    bk = xp.asarray(revents_np[:, 5])
+    z = xp.asarray(revents_np[:, 8]) if revents_np.shape[1] > 8 else None
 
-    px = rpoly[:, 0]
-    py = rpoly[:, 1]
+    rpoly_np = np.asarray(rpoly) if not isinstance(rpoly, np.ndarray) else rpoly
+    px = xp.asarray(rpoly_np[:, 0])
+    py = xp.asarray(rpoly_np[:, 1])
     tstart2 = tperiod[0]
     tlength = tperiod[1]
     Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
 
     fv1 = 0.0
     fv2 = 0.0
-    df1 = np.zeros(dimparam)
-    df2 = np.zeros(dimparam)
+    df1 = xp.zeros(dimparam)
+    df2 = xp.zeros(dimparam)
 
     for j in range(N):
-        if flag[j] == 1:
+        if int(flag[j]) == 1:
             nbr_j = nbr_lists[j] if nbr_lists is not None else None
             fv1_temp, g1_temp = lambda_j_grad(
                 tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
                 mver, is_3d, tperiod, norms=norms, nbr_idx=nbr_j)
+            fv1_temp = float(fv1_temp)
             if fv1_temp > 1.0e-25:
                 fv1 += math.log(fv1_temp)
             else:
                 fv1 -= 100.0
             for i in range(dimparam):
-                df1[i] += g1_temp[i] / fv1_temp if fv1_temp > 1e-25 else 0.0
+                df1[i] += float(g1_temp[i]) / fv1_temp if fv1_temp > 1e-25 else 0.0
 
-        z_j = z[j] if is_3d else None
+        z_j = float(z[j]) if is_3d else None
         fv2_temp, g2_temp = integ_j_grad(
             tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
             is_3d=is_3d, norms=norms, z_j=z_j, Z_max=Z_max)
-        fv2 += fv2_temp
+        fv2 += float(fv2_temp)
         for i in range(dimparam):
-            df2[i] += g2_temp[i]
+            df2[i] += float(g2_temp[i])
 
-    fv2 += tht[0] * tht[0] * integ0
-    df2[0] += integ0 * tht[0] * 2
+    fv2 += float(tht[0]) * float(tht[0]) * integ0
+    df2[0] += integ0 * float(tht[0]) * 2
 
     fv = -fv1 + fv2
     dfv = -df1 + df2
@@ -295,13 +309,12 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
             verbose, ndiv, eps, mver, tau_cut, r_cut, is_3d=False,
             eps_t=None, eps_s=None, eps_z=None):
     """DFP quasi-Newton optimization driver."""
-    from .backend import get_xp
-    xp = get_xp()
+    xp = _xp()
 
     revents_xp = xp.asarray(revents)
     rpoly_xp = xp.asarray(rpoly)
 
-    tht = theta.copy().astype(np.float64)
+    tht = np.asarray(theta).copy().astype(np.float64)
     dimparam = len(tht)
 
     if verbose:
@@ -314,7 +327,7 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
     const1 = 1.0e-17
 
     ramda = 0.05
-    h = ihess.copy().astype(np.float64)
+    h = np.asarray(ihess).copy().astype(np.float64)
 
     s = np.zeros(dimparam)
     dx = np.zeros(dimparam)
@@ -462,7 +475,8 @@ def etasfit(theta, revents, rpoly, tperiod, integ0, ihess,
     ``theta`` is supplied in natural (un-squared) parameters; we square-root
     internally to match the DFP convention.
     """
-    tht = np.sqrt(theta)
+    xp = _xp()
+    tht = xp.sqrt(xp.asarray(theta))
 
     cfit = dfp_fit(tht, revents, rpoly, tperiod, integ0, ihess,
                    verbose, ndiv, eps, mver, tau_cut, r_cut, is_3d=is_3d,
@@ -477,7 +491,7 @@ def etasfit(theta, revents, rpoly, tperiod, integ0, ihess,
     tht_est = cfit['estimate']
 
     inv_tht = 1.0 / tht_est
-    avcov = 0.25 * np.diag(inv_tht) @ H @ np.diag(inv_tht)
+    avcov = 0.25 * xp.diag(inv_tht) @ H @ xp.diag(inv_tht)
 
     return {
         'estimate': tht_est ** 2,

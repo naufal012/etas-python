@@ -10,16 +10,46 @@ satisfy
     r_ij  = ||x_j - x_i|| <= r_cut     (spatial: KDTree ball query)
 
 This module exposes :class:`NeighborIndex`, which builds a single
-``scipy.spatial.cKDTree`` over the (x, y) catalog coordinates and provides
-vectorized lookups of the parent-index intersection for each target event.
+KDTree over the (x, y) catalog coordinates and provides vectorized
+lookups of the parent-index intersection for each target event.
 
 When ``tau_cut`` or ``r_cut`` is infinite the corresponding constraint is
 skipped (returning the full earlier-events slice), so the un-truncated path
 remains bit-for-bit identical to the original implementation.
+
+The KDTree backend dispatches to ``scipy.spatial.cKDTree`` (CPU) or
+``cupyx.scipy.spatial.KDTree`` (GPU) depending on the active engine set via
+``etas.src.backend.set_engine()``.
 """
 
 import numpy as np
-from scipy.spatial import cKDTree
+
+
+def _make_kdtree(coords):
+    """Build a KDTree on *coords* using the active backend (CPU or GPU).
+
+    Parameters
+    ----------
+    coords : array-like, shape (N, 2)
+        Point coordinates (must be a NumPy array on CPU or CuPy array on GPU).
+
+    Returns
+    -------
+    tree : scipy.spatial.cKDTree or cupyx.scipy.spatial.KDTree
+    """
+    from .backend import get_engine
+
+    engine = get_engine()
+    if engine == 'gpu':
+        import cupy as cp
+        from cupyx.scipy.spatial import KDTree
+        # cupyx KDTree expects CuPy arrays
+        if not isinstance(coords, cp.ndarray):
+            coords = cp.asarray(coords)
+        return KDTree(coords)
+    else:
+        from scipy.spatial import cKDTree
+        return cKDTree(np.asarray(coords, dtype=np.float64))
 
 
 class NeighborIndex:
@@ -35,7 +65,7 @@ class NeighborIndex:
 
     Attributes
     ----------
-    tree : scipy.spatial.cKDTree
+    tree : scipy.spatial.cKDTree or cupyx.scipy.spatial.KDTree
         KDTree over the 2D (x, y) coordinates, used for spatial ball queries.
     t : np.ndarray
         Sorted event times (reference).
@@ -51,7 +81,7 @@ class NeighborIndex:
 
         # KDTree over the (x, y) coordinates.  balanced_tree=True is robust to
         # degenerate (collinear) input; compact_nodes keeps memory tight.
-        self.tree = cKDTree(np.column_stack([self.x, self.y]))
+        self.tree = _make_kdtree(np.column_stack([self.x, self.y]))
 
         # Sentinel "no spatial cutoff" flag.
         self._r_cut = None

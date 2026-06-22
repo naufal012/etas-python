@@ -8,6 +8,7 @@ intensity function at the end of the study period.
 
 import numpy as np
 from ..src.geometry import longlat2xy
+from ..src.backend import get_xp
 
 
 def rates(fit, lat_range=None, long_range=None, dimyx=None, slice_depth=None):
@@ -36,6 +37,8 @@ def rates(fit, lat_range=None, long_range=None, dimyx=None, slice_depth=None):
     )
     from ..src.renorm import compute_all_norms
 
+    xp = get_xp()
+
     catalog_obj = fit.catalog
     param = fit.param
     revents = catalog_obj.revents
@@ -44,18 +47,18 @@ def rates(fit, lat_range=None, long_range=None, dimyx=None, slice_depth=None):
     region_poly = catalog_obj.region_poly
     dist_unit = catalog_obj.dist_unit
 
-    t = revents[:, 0]
-    x = revents[:, 1]
-    y = revents[:, 2]
-    m = revents[:, 3]
-    pb = revents[:, 6]
+    t = xp.asarray(revents[:, 0])
+    x = xp.asarray(revents[:, 1])
+    y = xp.asarray(revents[:, 2])
+    m = xp.asarray(revents[:, 3])
+    pb = xp.asarray(revents[:, 6])
 
     # Robust 3D inference from the parameter NAMES rather than guessing from
     # the array length (the previous heuristic was off-by-one for mver=2).
     is_3d = ('eta' in fit.par_names)
     if is_3d:
-        z = revents[:, 8]
-        Z_max = np.max(z)
+        z = xp.asarray(revents[:, 8])
+        Z_max = float(xp.max(z))
 
     tstart2 = catalog_obj.rtperiod[0]
     tlength = catalog_obj.rtperiod[1]
@@ -118,53 +121,76 @@ def rates(fit, lat_range=None, long_range=None, dimyx=None, slice_depth=None):
         else:
             dimyx = (round(128 / rv), 128)
 
-    gx = np.linspace(xy_bnd['x'].min(), xy_bnd['x'].max(), dimyx[1])
-    gy = np.linspace(xy_bnd['y'].min(), xy_bnd['y'].max(), dimyx[0])
+    gx = xp.linspace(xy_bnd['x'].min(), xy_bnd['x'].max(), dimyx[1])
+    gy = xp.linspace(xy_bnd['y'].min(), xy_bnd['y'].max(), dimyx[0])
 
-    # Compute rates on grid
-    bkgd = np.zeros((dimyx[1], dimyx[0]))
-    total = np.zeros((dimyx[1], dimyx[0]))
-    clust = np.zeros((dimyx[1], dimyx[0]))
-    lamb = np.zeros((dimyx[1], dimyx[0]))
+    # ------------------------------------------------------------------
+    # Vectorized rate computation: broadcast grid × events
+    # ------------------------------------------------------------------
+    # gx shape (nx,), gy shape (ny,), x/y/m/pb shape (N,)
+    # Create 2-D grid meshes: (ny, nx)
+    gx_mesh, gy_mesh = xp.meshgrid(gx, gy, indexing='ij')
+    # Flatten for broadcasting against event arrays
+    gx_flat = gx_mesh.ravel()  # (ny*nx,)
+    gy_flat = gy_mesh.ravel()  # (ny*nx,)
 
-    for i in range(dimyx[1]):
-        for j in range(dimyx[0]):
-            sum1 = 0.0
-            sum2 = 0.0
+    # Vectorized pairwise distances: (ny*nx, N)
+    dx_mat = gx_flat[:, None] - x[None, :]
+    dy_mat = gy_flat[:, None] - y[None, :]
+    r2_mat = dx_mat ** 2 + dy_mat ** 2
 
-            for l in range(N):
-                r2 = dist2_euclidean(x[l], y[l], gx[i], gy[j])
-                sig = bwd[l]
-                tmp = (np.exp(-r2 / (2.0 * sig * sig)) /
-                       (2.0 * np.pi * sig * sig))
-                sum1 += pb[l] * tmp
-                sum2 += tmp
+    # Gaussian kernel for each grid-event pair: shape (ny*nx, N)
+    sig = xp.asarray(bwd)[None, :]  # (1, N)
+    tmp = xp.exp(-r2_mat / (2.0 * sig * sig)) / (2.0 * xp.pi * sig * sig)
 
-            bkgd[i, j] = sum1 / (tlength - tstart2)
-            total[i, j] = sum2 / (tlength - tstart2)
-            clust[i, j] = 1.0 - sum1 / sum2 if sum2 > 0 else 0.0
-            lamb[i, j] = mu * bkgd[i, j]
+    # pb-weighted sum over events for each grid point
+    sum1 = xp.sum(xp.asarray(pb)[None, :] * tmp, axis=1)
+    sum2 = xp.sum(tmp, axis=1)
 
-            for l in range(N):
-                r2 = dist2_euclidean(x[l], y[l], gx[i], gy[j])
-                kappa_val = kappafun(m[l], kparam)
-                g_val = gfun(tlength - t[l], gparam) / G_norm
-                if mver == 1:
-                    f_val = ffun1(r2, m[l], fparam) / F_norm[l]
-                else:
-                    f_val = ffun2(r2, m[l], fparam)
+    bkgd_flat = sum1 / (tlength - tstart2)
+    total_flat = sum2 / (tlength - tstart2)
 
-                if is_3d and slice_depth is not None:
-                    import scipy.special as special
-                    u = slice_depth / Z_max
-                    v = z[l] / Z_max
-                    log_beta = special.gammaln(eta * v + 1.0) + special.gammaln(eta * (1.0 - v) + 1.0) - special.gammaln(eta + 2.0)
-                    safe_u = max(float(u), 1e-12)
-                    safe_1_u = max(1.0 - float(u), 1e-12)
-                    log_h = (eta * v) * np.log(safe_u) + (eta * (1.0 - v)) * np.log(safe_1_u) - np.log(Z_max) - log_beta
-                    f_val = f_val * np.exp(log_h) / H_norm
+    # Conditional intensity: start with background rate
+    lamb_flat = mu * bkgd_flat
 
-                lamb[i, j] += kappa_val * g_val * f_val
+    # Add triggered component (still vectorized over grid points)
+    for l in range(N):
+        r2_l = r2_mat[:, l]  # (ny*nx,)
+        kappa_val = kappafun(m[l], kparam)
+        g_val = gfun(tlength - float(t[l]), gparam) / G_norm
+        if mver == 1:
+            f_val = ffun1(r2_l, m[l], fparam)
+            F_sub = xp.asarray(np.asarray(F_norm))[l]
+            f_val = f_val / F_sub
+        else:
+            f_val = ffun2(r2_l, m[l], fparam)
+
+        if is_3d and slice_depth is not None:
+            from ..src.backend import get_special
+            special = get_special()
+            u = slice_depth / Z_max
+            v_l = float(z[l]) / Z_max
+            log_beta = (special.gammaln(eta * v_l + 1.0)
+                        + special.gammaln(eta * (1.0 - v_l) + 1.0)
+                        - special.gammaln(eta + 2.0))
+            safe_u = max(float(u), 1e-12)
+            safe_1_u = max(1.0 - float(u), 1e-12)
+            log_h = ((eta * v_l) * np.log(safe_u)
+                     + (eta * (1.0 - v_l)) * np.log(safe_1_u)
+                     - np.log(Z_max) - log_beta)
+            f_val = f_val * np.exp(log_h) / H_norm
+
+        lamb_flat += kappa_val * g_val * f_val
+
+    # Clustering coefficient
+    clust_flat = xp.where(sum2 > 0, 1.0 - sum1 / sum2, 0.0)
+
+    # Reshape back to (ny, nx) — note: meshgrid with indexing='ij'
+    # gives (nx, ny) shape, matching the original double loop convention
+    bkgd = xp.asarray(bkgd_flat).reshape(dimyx[1], dimyx[0])
+    total = xp.asarray(total_flat).reshape(dimyx[1], dimyx[0])
+    clust = xp.asarray(clust_flat).reshape(dimyx[1], dimyx[0])
+    lamb = xp.asarray(lamb_flat).reshape(dimyx[1], dimyx[0])
 
     # Output coordinates in lon/lat
     out_x = np.linspace(long_range[0], long_range[1], dimyx[1])

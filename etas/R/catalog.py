@@ -16,6 +16,11 @@ from ..src.geometry import (
     longlat2xy, xy2longlat, roundoff_err, date2day,
     inside_polygon, polygon_area, polygon_centroid, nn_dist
 )
+from ..src.backend import get_xp as _get_xp
+
+
+def _xp():
+    return _get_xp()
 
 try:
     from shapely.geometry import Polygon
@@ -313,14 +318,15 @@ def catalog(data, time_begin=None, study_start=None,
 
     # Build revents array (N x 9):
     # [tt, xx, yy, mm, flag, bkgd, prob, lambd, zz]
+    xp = _xp()
     N = len(tt)
-    revents = np.column_stack([
-        tt, xx, yy, mm,
-        flag.astype(np.float64),
-        np.zeros(N),   # bkgd
-        np.ones(N),    # prob
-        np.zeros(N),   # lambd
-        zz             # depth
+    revents = xp.column_stack([
+        xp.asarray(tt), xp.asarray(xx), xp.asarray(yy), xp.asarray(mm),
+        xp.asarray(flag, dtype=np.float64),
+        xp.zeros(N),   # bkgd
+        xp.ones(N),    # prob
+        xp.zeros(N),   # lambd
+        xp.asarray(zz)             # depth
     ])
 
     # Update longlat_coord
