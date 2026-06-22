@@ -328,7 +328,10 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
     revents_xp = xp.asarray(revents)
     rpoly_xp = xp.asarray(rpoly)
 
-    tht = np.asarray(theta).copy().astype(np.float64)
+    # DFP inner loops use Python-level scalar math (sum(), *, +) on
+    # dimparam-sized vectors — keep those on NumPy even when the engine is GPU.
+    theta_np = theta.get() if hasattr(theta, 'get') else theta
+    tht = np.asarray(theta_np).copy().astype(np.float64)
     dimparam = len(tht)
 
     if verbose:
@@ -341,7 +344,8 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
     const1 = 1.0e-17
 
     ramda = 0.05
-    h = np.asarray(ihess).copy().astype(np.float64)
+    ihess_np = ihess.get() if hasattr(ihess, 'get') else ihess
+    h = np.asarray(ihess_np).copy().astype(np.float64)
 
     s = np.zeros(dimparam)
     dx = np.zeros(dimparam)
@@ -358,6 +362,8 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
                         mver, tau_cut, r_cut, is_3d=is_3d,
                         eps_t=eps_t, eps_s=eps_s, eps_z=eps_z,
                         norms=norms, nbr_lists=nbr_lists)
+    # DFP inner loops require numpy scalars; convert gradient to numpy.
+    g = g.get() if hasattr(g, 'get') else np.asarray(g)
 
     if verbose:
         print(f"Function Value = {fv:.4f}")
@@ -458,6 +464,7 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
                                 mver, tau_cut, r_cut, is_3d=is_3d,
                                 eps_t=eps_t, eps_s=eps_s, eps_z=eps_z,
                                 norms=norms, nbr_lists=nbr_lists)
+            g = g.get() if hasattr(g, 'get') else np.asarray(g)
 
             if verbose:
                 print(f"Function Value = {fv:.4f}")
