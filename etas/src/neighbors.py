@@ -170,7 +170,12 @@ class NeighborIndex:
 
         # Query the KDTree for all points within r_cut of event j (including
         # j itself and later events, which we filter out below).
-        nbrs = self.tree.query_ball_point([self.x[j], self.y[j]], rc)
+        point = [self.x[j], self.y[j]]
+        from .backend import get_engine
+        if get_engine() == 'gpu':
+            import cupy as cp
+            point = cp.asarray(point)
+        nbrs = self.tree.query_ball_point(point, rc)
         nbrs = np.asarray(nbrs, dtype=np.intp)
         if nbrs.size == 0:
             return np.empty(0, dtype=np.intp)
