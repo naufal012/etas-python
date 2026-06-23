@@ -170,6 +170,13 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
         tlength = tperiod[1]
         Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
 
+        # Auto-compute renormalization norms when not supplied (line search
+        # probes pass norms=None; the norms depend on tht which changes at
+        # every probe point).
+        if norms is None:
+            norms = _compute_norms(tht, ctx.m_np, mver, is_3d,
+                                   eps_t, eps_s, eps_z, Z_max)
+
         from .lambda_funcs import lambda_flat, integ_j
 
         lam = lambda_flat(tht, t, x, y, z, m, bk,
@@ -263,6 +270,11 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
         tstart2 = tperiod[0]
         tlength = tperiod[1]
         Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
+
+        # Auto-compute renormalization norms when not supplied.
+        if norms is None:
+            norms = _compute_norms(tht, ctx.m_np, mver, is_3d,
+                                   eps_t, eps_s, eps_z, Z_max)
 
         from .lambda_funcs import lambda_grad_flat, integ_j_grad
 
