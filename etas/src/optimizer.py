@@ -164,7 +164,6 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     if ctx is not None:
         t = ctx.t; x = ctx.x; y = ctx.y; m = ctx.m; bk = ctx.bk; z = ctx.z
         px = ctx.px; py = ctx.py; flag = ctx.flag_np; N = ctx.N
-        # --- Batch path: vectorized intensity + per-event integrals ---
         xp = _xp()
         tstart2 = tperiod[0]
         tlength = tperiod[1]
@@ -177,24 +176,46 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
             norms = _compute_norms(tht, ctx.m_np, mver, is_3d,
                                    eps_t, eps_s, eps_z, Z_max)
 
-        from .lambda_funcs import lambda_flat, integ_j
+        # --- When pruning is active, use the flattened batch path ----------
+        if ctx.nbr_flat is not None:
+            from .lambda_funcs import lambda_flat, integ_j
 
-        lam = lambda_flat(tht, t, x, y, z, m, bk,
-                          mver, is_3d, tperiod, norms=norms,
-                          nbr_flat=ctx.nbr_flat, flag=flag)
+            lam = lambda_flat(tht, t, x, y, z, m, bk,
+                              mver, is_3d, tperiod, norms=norms,
+                              nbr_flat=ctx.nbr_flat, flag=flag)
 
-        # Single sync for fv1
-        lam_np = np.asarray(lam)
+            # Single sync for fv1
+            lam_np = np.asarray(lam)
+            fv1 = 0.0
+            for j in range(N):
+                if flag[j] == 1:
+                    if lam_np[j] > 1.0e-25:
+                        fv1 += math.log(lam_np[j])
+                    else:
+                        fv1 -= 100.0
+
+            # Per-event integrals
+            fv2 = 0.0
+            for j in range(N):
+                fv2 += float(integ_j(tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
+                                     is_3d=is_3d, norms=norms, Z_max=Z_max))
+            fv2 += float(tht[0]) * float(tht[0]) * integ0
+
+            return -fv1 + fv2
+
+        # --- Fallback: per-event path using ctx arrays (unpruned) ---------
+        from .lambda_funcs import lambda_j, integ_j
+
         fv1 = 0.0
         for j in range(N):
             if flag[j] == 1:
-                if lam_np[j] > 1.0e-25:
-                    fv1 += math.log(lam_np[j])
+                s = lambda_j(tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
+                             mver, is_3d, tperiod, norms=norms)
+                if s > 1.0e-25:
+                    fv1 += math.log(float(s))
                 else:
                     fv1 -= 100.0
 
-        # Per-event integrals: poly_integ now returns GPU scalar without syncing;
-        # the only sync is t_j extraction inside integ_j (1 per event).
         fv2 = 0.0
         for j in range(N):
             fv2 += float(integ_j(tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
@@ -265,7 +286,6 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
         t = ctx.t; x = ctx.x; y = ctx.y; m = ctx.m; bk = ctx.bk; z = ctx.z
         px = ctx.px; py = ctx.py; flag = ctx.flag_np; N = ctx.N
 
-        # --- Batch path: vectorized intensity gradient + per-event integral gradient ---
         dimparam = len(tht)
         tstart2 = tperiod[0]
         tlength = tperiod[1]
@@ -276,40 +296,74 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
             norms = _compute_norms(tht, ctx.m_np, mver, is_3d,
                                    eps_t, eps_s, eps_z, Z_max)
 
-        from .lambda_funcs import lambda_grad_flat, integ_j_grad
+        # --- When pruning is active, use the flattened batch path ----------
+        if ctx.nbr_flat is not None:
+            from .lambda_funcs import lambda_grad_flat, integ_j_grad
 
-        lam, dlam = lambda_grad_flat(
-            tht, t, x, y, z, m, bk,
-            mver, is_3d, tperiod, norms=norms,
-            nbr_flat=ctx.nbr_flat, flag=flag)
+            lam, dlam = lambda_grad_flat(
+                tht, t, x, y, z, m, bk,
+                mver, is_3d, tperiod, norms=norms,
+                nbr_flat=ctx.nbr_flat, flag=flag)
 
-        # Single sync for fv1 + df1
-        lam_np = np.asarray(lam)
-        dlam_np = np.asarray(dlam)
+            # Single sync for fv1 + df1
+            lam_np = np.asarray(lam)
+            dlam_np = np.asarray(dlam)
+            fv1 = 0.0
+            df1 = np.zeros(dimparam)
+            for j in range(N):
+                if flag[j] == 1:
+                    fv1_temp = lam_np[j]
+                    if fv1_temp > 1.0e-25:
+                        fv1 += math.log(fv1_temp)
+                        for i in range(dimparam):
+                            df1[i] += dlam_np[j, i] / fv1_temp
+                    else:
+                        fv1 -= 100.0
+
+            # Per-event integral gradients
+            fv2_parts = []
+            df2_parts = []
+            for j in range(N):
+                fv2_j, df2_j = integ_j_grad(
+                    tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
+                    is_3d=is_3d, norms=norms, Z_max=Z_max)
+                fv2_parts.append(fv2_j)
+                df2_parts.append(df2_j)
+
+            fv2 = float(xp.sum(xp.stack(fv2_parts))) if fv2_parts else 0.0
+            df2 = np.asarray(xp.sum(xp.stack(df2_parts), axis=0)) if df2_parts else np.zeros(dimparam)
+
+            fv2 += float(tht[0]) * float(tht[0]) * integ0
+            df2[0] += integ0 * float(tht[0]) * 2
+
+            fv = -fv1 + fv2
+            dfv = -df1 + df2
+            return fv, dfv
+
+        # --- Fallback: per-event gradient path (unpruned) ------------------
+        from .lambda_funcs import lambda_j_grad, integ_j_grad
+
         fv1 = 0.0
         df1 = np.zeros(dimparam)
         for j in range(N):
             if flag[j] == 1:
-                fv1_temp = lam_np[j]
-                if fv1_temp > 1.0e-25:
-                    fv1 += math.log(fv1_temp)
+                s, ds = lambda_j_grad(tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
+                                      mver, is_3d, tperiod, norms=norms)
+                if s > 1.0e-25:
+                    fv1 += math.log(s)
                     for i in range(dimparam):
-                        df1[i] += dlam_np[j, i] / fv1_temp
+                        df1[i] += ds[i] / s
                 else:
                     fv1 -= 100.0
 
-        # Per-event integral gradients (accumulate on GPU, sync once)
-        fv2_parts = []
-        df2_parts = []
+        fv2 = 0.0
+        df2 = np.zeros(dimparam)
         for j in range(N):
             fv2_j, df2_j = integ_j_grad(
                 tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
                 is_3d=is_3d, norms=norms, Z_max=Z_max)
-            fv2_parts.append(fv2_j)
-            df2_parts.append(df2_j)
-
-        fv2 = float(xp.sum(xp.stack(fv2_parts))) if fv2_parts else 0.0
-        df2 = np.asarray(xp.sum(xp.stack(df2_parts), axis=0)) if df2_parts else np.zeros(dimparam)
+            fv2 += fv2_j
+            df2 += df2_j
 
         fv2 += float(tht[0]) * float(tht[0]) * integ0
         df2[0] += integ0 * float(tht[0]) * 2
