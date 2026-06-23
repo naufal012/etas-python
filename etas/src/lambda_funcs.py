@@ -1653,3 +1653,394 @@ def integ_j_grad_batch(theta, t, x, y, m, px, py, tstart2, tlength,
         dfv[:, 6] = (int_part1_v[:, 0] * gi_tot * int_part3_v[:, 2] * 2.0 * theta[6]) * Hfactor
 
     return fv, dfv
+
+
+# ===================================================================
+# Flattened batch functions — ONE GPU kernel for ALL parent-child pairs
+# ===================================================================
+
+def _scatter_add(xp, out, indices, values):
+    """Add ``values`` to ``out`` at ``indices`` (scatter-add).
+
+    Uses ``xp.add.at`` (NumPy) or ``cupyx.scatter_add`` (CuPy).
+    """
+    try:
+        from cupyx import scatter_add as cp_scatter_add
+        cp_scatter_add(out, indices, values)
+    except ImportError:
+        xp.add.at(out, indices, values)
+
+
+def lambda_flat(theta, t, x, y, z, m, bk,
+                mver=1, is_3d=False, tperiod=None, norms=None,
+                nbr_flat=None, flag=None):
+    """Vectorized intensity for ALL events — one GPU pass.
+
+    Parameters
+    ----------
+    nbr_flat : tuple (targets, sources)
+        ``targets``: (P,) array of target event indices.
+        ``sources``: (P,) array of source (parent) event indices.
+        All parent-child pairs are processed in a single vectorized operation.
+
+    Returns
+    -------
+    (N,) array of intensity at each event.
+    """
+    xp = get_xp()
+    norms = _norms_or_default(norms)
+    G_norm = norms['G_norm']
+    F_norm = norms['F_norm']
+    H_norm = norms['H_norm']
+    N = t.shape[0]
+    mu = theta[0] * theta[0]
+
+    # Background contribution
+    lam = xp.full(N, mu, dtype=xp.float64) * bk
+
+    if nbr_flat is None:
+        return lam
+
+    targets, sources = nbr_flat
+    if len(targets) == 0:
+        return lam
+
+    # Gather source data: (P,)
+    ti = t[sources]
+    xi = x[sources]
+    yi = y[sources]
+    mi = m[sources]
+
+    # Gather target data: (P,)
+    t_j = t[targets]
+    x_j = x[targets]
+    y_j = y[targets]
+
+    # Pairwise deltas: (P,)
+    delta = t_j - ti
+    r2 = (x_j - xi) ** 2 + (y_j - yi) ** 2
+
+    if mver == 1:
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        q     = theta[6] * theta[6]
+        gamma = theta[7] * theta[7]
+
+        part1 = xp.exp(alpha * mi)
+        part2 = (p - 1.0) / c * (1.0 + delta / c) ** (-p)
+        sig = D * xp.exp(gamma * mi)
+        part3 = ((q - 1.0) / (sig * xp.pi) * (1.0 + r2 / sig) ** (-q))
+
+        invG = 1.0 / G_norm
+        part2 = part2 * invG
+        if F_norm is not None:
+            invF = 1.0 / xp.asarray(
+                F_norm[sources] if _is_xp_array(F_norm, xp)
+                else np.asarray(F_norm, dtype=np.float64)[sources],
+                dtype=part3.dtype)
+            part3 = part3 * invF
+
+        if is_3d:
+            from .backend import get_special
+            special = get_special()
+            Z_max = tperiod[2]
+            eta = theta[8] * theta[8]
+            z_j = z[targets]
+            zi = z[sources]
+            u = z_j / Z_max
+            v = zi / Z_max
+            # _depth_log_h expects scalar u, array v.  We need elementwise.
+            # Recompute inline for vectorization.
+            log_beta = (special.gammaln(eta * v + 1.0)
+                        + special.gammaln(eta * (1.0 - v) + 1.0)
+                        - special.gammaln(eta + 2.0))
+            u_val = xp.clip(u, 1e-12, 1.0 - 1e-12)
+            one_minus_u = 1.0 - u_val
+            log_h = ((eta * v) * xp.log(u_val)
+                     + (eta * (1.0 - v)) * xp.log(one_minus_u)
+                     - xp.log(Z_max) - log_beta)
+            part3 = part3 * xp.exp(log_h) / H_norm
+
+        contrib = A * part1 * part2 * part3
+
+    else:  # mver == 2
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        gamma = theta[6] * theta[6]
+
+        k_val = A * xp.exp(alpha * mi)
+        g_val = (p - 1.0) / c * (1.0 + delta / c) ** (-p)
+        sig_sq = D * xp.exp(gamma * mi)
+        f_val = xp.exp(-r2 / (2.0 * sig_sq)) / (2.0 * xp.pi * sig_sq)
+
+        invG = 1.0 / G_norm
+        g_val = g_val * invG
+
+        if is_3d:
+            from .backend import get_special
+            special = get_special()
+            Z_max = tperiod[2]
+            eta = theta[7] * theta[7]
+            z_j = z[targets]
+            zi = z[sources]
+            u = z_j / Z_max
+            v = zi / Z_max
+            log_beta = (special.gammaln(eta * v + 1.0)
+                        + special.gammaln(eta * (1.0 - v) + 1.0)
+                        - special.gammaln(eta + 2.0))
+            u_val = xp.clip(u, 1e-12, 1.0 - 1e-12)
+            one_minus_u = 1.0 - u_val
+            log_h = ((eta * v) * xp.log(u_val)
+                     + (eta * (1.0 - v)) * xp.log(one_minus_u)
+                     - xp.log(Z_max) - log_beta)
+            f_val = f_val * xp.exp(log_h) / H_norm
+
+        contrib = k_val * g_val * f_val
+
+    # Scatter-add contributions to target events
+    _scatter_add(xp, lam, targets, contrib)
+
+    return lam
+
+
+def lambda_grad_flat(theta, t, x, y, z, m, bk,
+                     mver=1, is_3d=False, tperiod=None, norms=None,
+                     nbr_flat=None, flag=None):
+    """Vectorized intensity AND gradient for ALL events — one GPU pass.
+
+    Returns ``(fv, dfv)`` where ``fv`` is shape ``(N,)`` and ``dfv`` is
+    shape ``(N, dimparam)``.
+    """
+    xp = get_xp()
+    norms = _norms_or_default(norms)
+    G_norm = norms['G_norm']
+    F_norm = norms['F_norm']
+    H_norm = norms['H_norm']
+    G_grad = norms['G_grad']
+    F_grad = norms['F_grad']
+    N = t.shape[0]
+    dimparam = len(theta)
+    mu = theta[0] * theta[0]
+
+    # Background
+    fv = xp.full(N, mu, dtype=xp.float64) * bk
+    dfv = xp.zeros((N, dimparam), dtype=xp.float64)
+    dfv[:, 0] = bk * 2.0 * theta[0]
+
+    if nbr_flat is None:
+        return fv, dfv
+
+    targets, sources = nbr_flat
+    P = len(targets)
+    if P == 0:
+        return fv, dfv
+
+    # Gather data: (P,)
+    ti = t[sources]; xi = x[sources]; yi = y[sources]; mi = m[sources]
+    t_j = t[targets]; x_j = x[targets]; y_j = y[targets]
+    delta = t_j - ti
+    r2 = (x_j - xi) ** 2 + (y_j - yi) ** 2
+
+    if mver == 1:
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        q     = theta[6] * theta[6]
+        gamma = theta[7] * theta[7]
+        invG = 1.0 / G_norm
+        dG_dc, dG_dp = G_grad
+
+        part1 = xp.exp(alpha * mi)
+        part2 = (p - 1.0) / c * (1.0 + delta / c) ** (-p)
+        sig = D * xp.exp(gamma * mi)
+        part3 = ((q - 1.0) / (sig * xp.pi) * (1.0 + r2 / sig) ** (-q))
+
+        part2_r = part2 * invG
+
+        invF = xp.ones(P, dtype=xp.float64)
+        if F_norm is not None:
+            F_at = xp.asarray(
+                F_norm[sources] if _is_xp_array(F_norm, xp)
+                else np.asarray(F_norm, dtype=np.float64)[sources],
+                dtype=part3.dtype)
+            invF = 1.0 / F_at
+            part3_r = part3 * invF
+        else:
+            part3_r = part3
+
+        hfactor = xp.ones(P, dtype=xp.float64)
+        if is_3d:
+            from .backend import get_special
+            special = get_special()
+            Z_max = tperiod[2]
+            eta = theta[8] * theta[8]
+            z_j = z[targets]; zi = z[sources]
+            u = z_j / Z_max; v = zi / Z_max
+            log_beta = (special.gammaln(eta * v + 1.0)
+                        + special.gammaln(eta * (1.0 - v) + 1.0)
+                        - special.gammaln(eta + 2.0))
+            u_val = xp.clip(u, 1e-12, 1.0 - 1e-12)
+            log_h = ((eta * v) * xp.log(u_val)
+                     + (eta * (1.0 - v)) * xp.log(1.0 - u_val)
+                     - xp.log(Z_max) - log_beta)
+            h_val = xp.exp(log_h) / H_norm
+            hfactor = h_val
+            part3_r = part3_r * h_val
+
+        kA = A * part1
+        kern = part2_r * part3_r
+        contrib = kA * kern   # (P,)
+        _scatter_add(xp, fv, targets, contrib)
+
+        # --- gradient contributions (per-parameter, scatter-add to target) ---
+        # d/dA: 2*theta[1] * sum_parents part1 * kern
+        _scatter_add(xp, dfv[:, 1], targets,
+                     2.0 * theta[1] * part1 * kern)
+        # d/dc
+        part2_dc = part2 * (-1.0 / c + p * delta / (c * (c + delta)))
+        g_c = kA * (part2_dc * invG - part2 * invG * invG * dG_dc) * part3_r
+        _scatter_add(xp, dfv[:, 2], targets, 2.0 * theta[2] * g_c)
+        # d/dalpha
+        _scatter_add(xp, dfv[:, 3], targets,
+                     2.0 * theta[3] * A * part1 * mi * kern)
+        # d/dp
+        part2_dp = part2 * (1.0 / (p - 1.0) - xp.log(1.0 + delta / c))
+        g_p = kA * (part2_dp * invG - part2 * invG * invG * dG_dp) * part3_r
+        _scatter_add(xp, dfv[:, 4], targets, 2.0 * theta[4] * g_p)
+        # d/dD
+        part3_dD = part3 / D * (-1.0 + q * (1.0 - 1.0 / (1.0 + r2 / sig)))
+        if F_norm is not None and F_grad[0] is not None:
+            dF_D_at = xp.asarray(
+                F_grad[0][sources] if _is_xp_array(F_grad[0], xp)
+                else np.asarray(F_grad[0], dtype=np.float64)[sources],
+                dtype=part3.dtype)
+            g_D = kA * part2_r * hfactor * (part3_dD * invF - part3 * invF * invF * dF_D_at)
+        else:
+            g_D = kA * part2_r * hfactor * part3_dD
+        _scatter_add(xp, dfv[:, 5], targets, 2.0 * theta[5] * g_D)
+        # d/dq
+        part3_dq = part3 * (1.0 / (q - 1.0) - xp.log(1.0 + r2 / sig))
+        if F_norm is not None and F_grad[1] is not None:
+            dF_q_at = xp.asarray(
+                F_grad[1][sources] if _is_xp_array(F_grad[1], xp)
+                else np.asarray(F_grad[1], dtype=np.float64)[sources],
+                dtype=part3.dtype)
+            g_q = kA * part2_r * hfactor * (part3_dq * invF - part3 * invF * invF * dF_q_at)
+        else:
+            g_q = kA * part2_r * hfactor * part3_dq
+        _scatter_add(xp, dfv[:, 6], targets, 2.0 * theta[6] * g_q)
+        # d/dgamma
+        part3_dgamma = part3 * (-mi + q * mi * (1.0 - 1.0 / (1.0 + r2 / sig)))
+        if F_norm is not None and F_grad[2] is not None:
+            dF_g_at = xp.asarray(
+                F_grad[2][sources] if _is_xp_array(F_grad[2], xp)
+                else np.asarray(F_grad[2], dtype=np.float64)[sources],
+                dtype=part3.dtype)
+            g_gamma = kA * part2_r * hfactor * (part3_dgamma * invF - part3 * invF * invF * dF_g_at)
+        else:
+            g_gamma = kA * part2_r * hfactor * part3_dgamma
+        _scatter_add(xp, dfv[:, 7], targets, 2.0 * theta[7] * g_gamma)
+
+        if is_3d:
+            # d/deta
+            from .backend import get_special
+            special = get_special()
+            Z_max = tperiod[2]
+            eta = theta[8] * theta[8]
+            z_j = z[targets]; zi = z[sources]
+            u = z_j / Z_max; v = zi / Z_max
+            u_val = xp.clip(u, 1e-12, 1.0 - 1e-12)
+            digamma_term = (v * special.digamma(eta * v + 1.0)
+                            + (1.0 - v) * special.digamma(eta * (1.0 - v) + 1.0)
+                            - special.digamma(eta + 2.0))
+            dh_deta = h_val * (v * xp.log(u_val)
+                               + (1.0 - v) * xp.log(1.0 - u_val)
+                               - digamma_term)
+            invF_val = invF if F_norm is not None else xp.ones(P, dtype=xp.float64)
+            g_eta = kA * part2_r * part3 * invF_val * dh_deta
+            _scatter_add(xp, dfv[:, 8], targets, 2.0 * theta[8] * g_eta)
+
+    else:  # mver == 2
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        gamma = theta[6] * theta[6]
+        invG = 1.0 / G_norm
+        dG_dc, dG_dp = G_grad
+
+        k_val = A * xp.exp(alpha * mi)
+        g_val = (p - 1.0) / c * (1.0 + delta / c) ** (-p)
+        sig_sq = D * xp.exp(gamma * mi)
+        f_val = xp.exp(-r2 / (2.0 * sig_sq)) / (2.0 * xp.pi * sig_sq)
+
+        g_val_r = g_val * invG
+
+        hfactor = xp.ones(P, dtype=xp.float64)
+        if is_3d:
+            from .backend import get_special
+            special = get_special()
+            Z_max = tperiod[2]
+            eta = theta[7] * theta[7]
+            z_j = z[targets]; zi = z[sources]
+            u = z_j / Z_max; v = zi / Z_max
+            log_beta = (special.gammaln(eta * v + 1.0)
+                        + special.gammaln(eta * (1.0 - v) + 1.0)
+                        - special.gammaln(eta + 2.0))
+            u_val = xp.clip(u, 1e-12, 1.0 - 1e-12)
+            log_h = ((eta * v) * xp.log(u_val)
+                     + (eta * (1.0 - v)) * xp.log(1.0 - u_val)
+                     - xp.log(Z_max) - log_beta)
+            h_val = xp.exp(log_h) / H_norm
+            hfactor = h_val
+            f_val = f_val * h_val
+
+        kern = g_val_r * f_val
+        contrib = k_val * kern
+        _scatter_add(xp, fv, targets, contrib)
+
+        # Gradients
+        _scatter_add(xp, dfv[:, 1], targets,
+                     2.0 * theta[1] * xp.exp(alpha * mi) * kern)
+        g_val_dc = g_val * (-1.0 / c + p * delta / (c * (c + delta)))
+        g_c = k_val * (g_val_dc * invG - g_val * invG * invG * dG_dc) * f_val
+        _scatter_add(xp, dfv[:, 2], targets, 2.0 * theta[2] * g_c)
+        _scatter_add(xp, dfv[:, 3], targets,
+                     2.0 * theta[3] * A * mi * xp.exp(alpha * mi) * kern)
+        g_val_dp = g_val * (1.0 / (p - 1.0) - xp.log(1.0 + delta / c))
+        g_p = k_val * (g_val_dp * invG - g_val * invG * invG * dG_dp) * f_val
+        _scatter_add(xp, dfv[:, 4], targets, 2.0 * theta[4] * g_p)
+        f_val_D = f_val * (r2 / (2.0 * sig_sq * D) - 1.0 / D)
+        _scatter_add(xp, dfv[:, 5], targets,
+                     2.0 * theta[5] * k_val * g_val_r * f_val_D)
+        f_val_gamma = f_val * (r2 / (2.0 * sig_sq) - 1.0) * mi
+        _scatter_add(xp, dfv[:, 6], targets,
+                     2.0 * theta[6] * k_val * g_val_r * f_val_gamma)
+
+        if is_3d:
+            from .backend import get_special
+            special = get_special()
+            Z_max = tperiod[2]
+            eta = theta[7] * theta[7]
+            z_j = z[targets]; zi = z[sources]
+            u = z_j / Z_max; v = zi / Z_max
+            u_val = xp.clip(u, 1e-12, 1.0 - 1e-12)
+            digamma_term = (v * special.digamma(eta * v + 1.0)
+                            + (1.0 - v) * special.digamma(eta * (1.0 - v) + 1.0)
+                            - special.digamma(eta + 2.0))
+            dh_deta = h_val * H_norm * (v * xp.log(u_val)
+                                        + (1.0 - v) * xp.log(1.0 - u_val)
+                                        - digamma_term)
+            g_eta = k_val * g_val_r * (f_val / h_val) * dh_deta
+            _scatter_add(xp, dfv[:, 7], targets, 2.0 * theta[7] * g_eta)
+
+    return fv, dfv

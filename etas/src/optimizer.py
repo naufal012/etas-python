@@ -43,7 +43,8 @@ class _DataContext:
     """
 
     __slots__ = ('t', 'x', 'y', 'm', 'flag_np', 'bk', 'z',
-                 'px', 'py', 'N', 'revents', 'rpoly', 'm_np', 'revents_np')
+                 'px', 'py', 'N', 'revents', 'rpoly', 'm_np',
+                 'revents_np', 'nbr_flat')
 
     def __init__(self, revents, rpoly, is_3d):
         xp = _xp()
@@ -69,6 +70,7 @@ class _DataContext:
         self.m_np = np.asarray(rev_np[:, 3])          # CPU magnitudes for renorm
         self.px = xp.asarray(rpo_np[:, 0])
         self.py = xp.asarray(rpo_np[:, 1])
+        self.nbr_flat = None      # set by dfp_fit after building neighbors
 
 
 def _compute_norms(tht, m_np, mver, is_3d, eps_t, eps_s, eps_z, Z_max):
@@ -97,6 +99,38 @@ def _build_neighbors(revents_np, tau_cut, r_cut):
         np.asarray(revents_np[:, 0]))
     nbr_index.set_cutoffs(tau_cut, r_cut)
     return nbr_index.query_all(tau_cut, r_cut)
+
+
+def _flatten_neighbors(nbr_lists, flag, N):
+    """Flatten KDTree neighbor lists into (targets, sources) arrays.
+
+    Returns ``(targets, sources)`` where each is an ``np.ndarray`` of equal
+    length P (total number of parent-child pairs).  Both are sorted by target
+    index.  Events with ``flag != 1`` are skipped.
+
+    Returns None when there are no neighbors.
+    """
+    if nbr_lists is None:
+        return None
+
+    targets_parts = []
+    sources_parts = []
+
+    for j in range(N):
+        if flag[j] != 1 or j == 0:
+            continue
+        idx = nbr_lists[j]
+        if idx is None or len(idx) == 0:
+            continue
+        targets_parts.append(np.full(len(idx), j, dtype=np.intp))
+        sources_parts.append(np.asarray(idx, dtype=np.intp))
+
+    if not targets_parts:
+        return None
+
+    targets = np.concatenate(targets_parts)
+    sources = np.concatenate(sources_parts)
+    return targets, sources
 
 
 def _precompute(tht, revents, mver, is_3d, eps_t, eps_s, eps_z, Z_max, tau_cut, r_cut):
@@ -130,40 +164,34 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     if ctx is not None:
         t = ctx.t; x = ctx.x; y = ctx.y; m = ctx.m; bk = ctx.bk; z = ctx.z
         px = ctx.px; py = ctx.py; flag = ctx.flag_np; N = ctx.N
-        # --- Batch path: accumulate GPU results, sync once at end ---
+        # --- Batch path: vectorized intensity + per-event integrals ---
         xp = _xp()
         tstart2 = tperiod[0]
         tlength = tperiod[1]
         Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
 
-        fv1_parts = []
-        fv2_parts = []
+        from .lambda_funcs import lambda_flat, integ_j
 
+        lam = lambda_flat(tht, t, x, y, z, m, bk,
+                          mver, is_3d, tperiod, norms=norms,
+                          nbr_flat=ctx.nbr_flat, flag=flag)
+
+        # Single sync for fv1
+        lam_np = np.asarray(lam)
+        fv1 = 0.0
         for j in range(N):
             if flag[j] == 1:
-                nbr_j = nbr_lists[j] if nbr_lists is not None else None
-                s = lambda_j(tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
-                             mver, is_3d, tperiod, norms=norms, nbr_idx=nbr_j)
-                fv1_parts.append(s)
-            # integ_j does not need neighbor pruning (polygon integral is exact).
-            fv2_j = integ_j(tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
-                             is_3d=is_3d, norms=norms, Z_max=Z_max)
-            fv2_parts.append(fv2_j)
+                if lam_np[j] > 1.0e-25:
+                    fv1 += math.log(lam_np[j])
+                else:
+                    fv1 -= 100.0
 
-        # Single sync for fv1: stack, log, sum
-        if fv1_parts:
-            fv1_arr = xp.stack(fv1_parts)
-            valid = fv1_arr > 1.0e-25
-            safe = xp.where(valid, fv1_arr, 1.0)
-            fv1 = float(xp.sum(xp.where(valid, xp.log(safe), -100.0)))
-        else:
-            fv1 = 0.0
-
-        # Single sync for fv2
-        if fv2_parts:
-            fv2 = float(xp.sum(xp.stack(fv2_parts)))
-        else:
-            fv2 = 0.0
+        # Per-event integrals: poly_integ now returns GPU scalar without syncing;
+        # the only sync is t_j extraction inside integ_j (1 per event).
+        fv2 = 0.0
+        for j in range(N):
+            fv2 += float(integ_j(tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
+                                 is_3d=is_3d, norms=norms, Z_max=Z_max))
         fv2 += float(tht[0]) * float(tht[0]) * integ0
 
         return -fv1 + fv2
@@ -230,54 +258,47 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
         t = ctx.t; x = ctx.x; y = ctx.y; m = ctx.m; bk = ctx.bk; z = ctx.z
         px = ctx.px; py = ctx.py; flag = ctx.flag_np; N = ctx.N
 
-        # --- Batch path: accumulate GPU results, sync once at end ---
+        # --- Batch path: vectorized intensity gradient + per-event integral gradient ---
         dimparam = len(tht)
         tstart2 = tperiod[0]
         tlength = tperiod[1]
         Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
 
-        fv1_parts = []
-        df1_parts = []
-        fv2_parts = []
-        df2_parts = []
+        from .lambda_funcs import lambda_grad_flat, integ_j_grad
 
+        lam, dlam = lambda_grad_flat(
+            tht, t, x, y, z, m, bk,
+            mver, is_3d, tperiod, norms=norms,
+            nbr_flat=ctx.nbr_flat, flag=flag)
+
+        # Single sync for fv1 + df1
+        lam_np = np.asarray(lam)
+        dlam_np = np.asarray(dlam)
+        fv1 = 0.0
+        df1 = np.zeros(dimparam)
         for j in range(N):
             if flag[j] == 1:
-                nbr_j = nbr_lists[j] if nbr_lists is not None else None
-                fv_j, df_j = lambda_j_grad(
-                    tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
-                    mver, is_3d, tperiod, norms=norms, nbr_idx=nbr_j)
-                fv1_parts.append(fv_j)
-                df1_parts.append(df_j)
+                fv1_temp = lam_np[j]
+                if fv1_temp > 1.0e-25:
+                    fv1 += math.log(fv1_temp)
+                    for i in range(dimparam):
+                        df1[i] += dlam_np[j, i] / fv1_temp
+                else:
+                    fv1 -= 100.0
 
+        # Per-event integral gradients (accumulate on GPU, sync once)
+        fv2_parts = []
+        df2_parts = []
+        for j in range(N):
             fv2_j, df2_j = integ_j_grad(
                 tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
                 is_3d=is_3d, norms=norms, Z_max=Z_max)
             fv2_parts.append(fv2_j)
             df2_parts.append(df2_j)
 
-        # Single sync for fv1 + df1
-        if fv1_parts:
-            fv1_arr = xp.stack(fv1_parts)
-            df1_stack = xp.stack(df1_parts)
-            valid = fv1_arr > 1.0e-25
-            safe_fv1 = xp.where(valid, fv1_arr, 1.0)
-            fv1 = float(xp.sum(xp.where(valid, xp.log(safe_fv1), -100.0)))
-            # df1 = sum_j df_j / fv_j for valid events, 0 for invalid
-            inv_denom = xp.where(valid[:, None], 1.0 / safe_fv1[:, None], 0.0)
-            df1_gpu = xp.sum(df1_stack * inv_denom, axis=0)
-            df1 = np.asarray(df1_gpu)
-        else:
-            fv1 = 0.0
-            df1 = np.zeros(dimparam)
+        fv2 = float(xp.sum(xp.stack(fv2_parts))) if fv2_parts else 0.0
+        df2 = np.asarray(xp.sum(xp.stack(df2_parts), axis=0)) if df2_parts else np.zeros(dimparam)
 
-        # Single sync for fv2 + df2
-        if fv2_parts:
-            fv2 = float(xp.sum(xp.stack(fv2_parts)))
-            df2 = np.asarray(xp.sum(xp.stack(df2_parts), axis=0))
-        else:
-            fv2 = 0.0
-            df2 = np.zeros(dimparam)
         fv2 += float(tht[0]) * float(tht[0]) * integ0
         df2[0] += integ0 * float(tht[0]) * 2
 
@@ -518,6 +539,9 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
     # Neighbor lists depend ONLY on cutoffs + coordinates (constant for the
     # whole fit), so build them ONCE here — not inside every _linesearch probe.
     nbr_lists = _build_neighbors(ctx.revents_np, tau_cut, r_cut)
+    # Flatten neighbor lists for GPU vectorization (one big array of pairs).
+    # These are built once and reused across all likelihood/gradient calls.
+    ctx.nbr_flat = _flatten_neighbors(nbr_lists, ctx.flag_np, ctx.N)
     norms = _compute_norms(tht, ctx.m_np, mver, is_3d, eps_t, eps_s, eps_z, Z_max)
 
     fv, g = _loglkhd_gr(tht, revents_xp, rpoly_xp, tperiod, integ0,

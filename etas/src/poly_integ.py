@@ -104,11 +104,13 @@ def poly_integ(func, funcpara, px, py, cx, cy, ndiv=1000):
     py = xp.asarray(py, dtype=float)
     nv = len(px) - 1
 
-    total = 0.0
     # Hoist the arange out of the edge loop — one allocation instead of N.
     k = xp.arange(ndiv, dtype=float)
     t0 = k / ndiv
     t1 = (k + 1.0) / ndiv
+
+    # GPU accumulation: keep a running 0-d sum on the device, sync once at end.
+    total = None
 
     for j in range(nv):
         # Create vectors for all ndiv segments of this edge
@@ -124,8 +126,6 @@ def poly_integ(func, funcpara, px, py, cx, cy, ndiv=1000):
         sign = xp.where(det < 0, -1.0, 1.0)
         
         valid_mask = xp.abs(det) >= 1e-10
-        if not xp.any(valid_mask):
-            continue
             
         x1_v = sx1[valid_mask]
         y1_v = sy1[valid_mask]
@@ -147,9 +147,6 @@ def poly_integ(func, funcpara, px, py, cx, cy, ndiv=1000):
         
         r_sum = r1 + r2
         r_mask = r_sum > 1e-20
-        
-        if not xp.any(r_mask):
-            continue
             
         r1_m = r1[r_mask]
         r2_m = r2[r_mask]
@@ -166,17 +163,15 @@ def poly_integ(func, funcpara, px, py, cx, cy, ndiv=1000):
         y0 = y1_m + frac * (y2_m - y1_m)
         r0 = xp.sqrt((x0 - cx)**2 + (y0 - cy)**2)
         
-        # The func itself needs to process xp arrays now!
         f1 = func(r1_m, funcpara)
         f2 = func(r0, funcpara)
         f3 = func(r2_m, funcpara)
         
         val = sign_m * (f1 / 6.0 + f2 * 2.0 / 3.0 + f3 / 6.0) * theta_m
-        # Use .item() instead of float(xp.sum(...)) to avoid double-sync on CuPy.
-        # .item() is equivalent but more idiomatic; on NumPy there is no difference.
-        total += val.sum().item()
+        edge_sum = val.sum()
+        total = edge_sum if total is None else total + edge_sum
         
-    return total
+    return total if total is not None else 0.0
 
 
 # ===================================================================
