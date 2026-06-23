@@ -136,12 +136,12 @@ def temporal_norm_grad(c, p, eps_t=None, T_max=None):
         base = 1.0 + T_max / c
         Gn = 1.0 - base ** (1.0 - p)
         dGn_dc = (1.0 - p) * (base ** (-p)) * T_max / (c * c)
-        dGn_dp = float(xp.log(base)) * base ** (1.0 - p)
+        dGn_dp = math.log(base) * base ** (1.0 - p)
         return float(Gn), float(dGn_dc), float(dGn_dp)
 
     # u = ((p-1)/(c*eps_t))^(1/p)  ==  1 + T_max/c
     u = ((p - 1.0) / (c * eps_t)) ** (1.0 / p)
-    log_u = float(xp.log(u))
+    log_u = math.log(u)
     Gn = 1.0 - u ** (1.0 - p)
     # Total derivatives through the cutoff constraint.
     dGn_dc = -(p - 1.0) * (u ** (1.0 - p)) / (p * c)

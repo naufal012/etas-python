@@ -69,13 +69,16 @@ def _depth_log_h(u, v, eta, Z_max, special):
     array of parent normalized depths.  Returns an array the same shape as
     ``v``.  Uses ``gammaln`` for a numerically stable Beta normalization.
     """
+    xp = get_xp()
     log_beta = (special.gammaln(eta * v + 1.0)
                 + special.gammaln(eta * (1.0 - v) + 1.0)
                 - special.gammaln(eta + 2.0))
     # Clamp target-side logs away from 0/1 to avoid -inf; the parent-side
-    # exponents stay exact.
-    safe_u = max(float(u), 1e-12)
-    safe_1u = max(1.0 - float(u), 1e-12)
+    # exponents stay exact. Use .item() to get a Python float (one sync on GPU,
+    # zero cost on CPU).
+    u_val = float(u.item()) if hasattr(u, 'item') else float(u)
+    safe_u = max(u_val, 1e-12)
+    safe_1u = max(1.0 - u_val, 1e-12)
     log_h = ((eta * v) * math.log(safe_u)
              + (eta * (1.0 - v)) * math.log(safe_1u)
              - math.log(Z_max) - log_beta)
@@ -191,7 +194,7 @@ def lambda_j(theta, j, t, x, y, z, m, bk, tau_cut, r_cut,
 
         s = mu * bk[j]
         if delta.size == 0:
-            return float(s)
+            return s   # GPU scalar, no sync
 
         part1 = xp.exp(alpha * mi)
         part2 = (p - 1.0) / c * (1.0 + delta / c) ** (-p)
@@ -215,7 +218,7 @@ def lambda_j(theta, j, t, x, y, z, m, bk, tau_cut, r_cut,
             part3 = part3 * xp.exp(log_h) / H_norm
 
         s += xp.sum(A * part1 * part2 * part3)
-        return float(s)
+        return s   # GPU scalar, no sync
 
     elif mver == 2:
         # --- Gaussian spatial kernel, 7 parameters ---
@@ -229,7 +232,7 @@ def lambda_j(theta, j, t, x, y, z, m, bk, tau_cut, r_cut,
 
         s = mu * bk[j]
         if delta.size == 0:
-            return float(s)
+            return s
 
         k_val = A * xp.exp(alpha * mi)
         g_val = (p - 1.0) / c * (1.0 + delta / c) ** (-p)
@@ -251,7 +254,7 @@ def lambda_j(theta, j, t, x, y, z, m, bk, tau_cut, r_cut,
             f_val = f_val * xp.exp(log_h) / H_norm
 
         s += xp.sum(k_val * g_val * f_val)
-        return float(s)
+        return s
 
     else:
         raise ValueError(f"Unknown mver={mver}; expected 1 or 2")
@@ -298,7 +301,7 @@ def lambda_j_grad(theta, j, t, x, y, z, m, bk, tau_cut, r_cut,
     if j == 0:
         mu = theta[0] * theta[0]
         nparam = (9 if is_3d else 8) if mver == 1 else (8 if is_3d else 7)
-        dfv = np.zeros(nparam)
+        dfv = xp.zeros(nparam)
         dfv[0] = bk[j] * 2.0 * theta[0]
         return mu * bk[j], dfv
 
@@ -452,8 +455,9 @@ def lambda_j_grad(theta, j, t, x, y, z, m, bk, tau_cut, r_cut,
                     # dh/deta = h * ( v*log u + (1-v)*log(1-u)
                     #                 - [ v*psi(eta v+1) + (1-v)*psi(eta(1-v)+1) - psi(eta+2) ] )
                     # h_val already includes /H_norm, so dh/deta = h_val * (...)  with NO extra /H_norm.
-                    safe_u = max(float(u), 1e-12)
-                    safe_1u = max(1.0 - float(u), 1e-12)
+                    u_val = float(u.item()) if hasattr(u, 'item') else float(u)
+                    safe_u = max(u_val, 1e-12)
+                    safe_1u = max(1.0 - u_val, 1e-12)
                     digamma_term = (v * special.digamma(eta * v + 1.0)
                                     + (1.0 - v) * special.digamma(eta * (1.0 - v) + 1.0)
                                     - special.digamma(eta + 2.0))
@@ -465,18 +469,19 @@ def lambda_j_grad(theta, j, t, x, y, z, m, bk, tau_cut, r_cut,
                                  if F_norm is not None else
                                  kA * part2_r * part3 * dh_deta)
 
-        fv = float(s)
-        dfv = np.empty(9 if is_3d else 8)
-        dfv[0] = float(sg1 * 2.0 * theta[0])
-        dfv[1] = float(sg2 * 2.0 * theta[1])
-        dfv[2] = float(sg3 * 2.0 * theta[2])
-        dfv[3] = float(sg4 * 2.0 * theta[3])
-        dfv[4] = float(sg5 * 2.0 * theta[4])
-        dfv[5] = float(sg6 * 2.0 * theta[5])
-        dfv[6] = float(sg7 * 2.0 * theta[6])
-        dfv[7] = float(sg8 * 2.0 * theta[7])
+        fv = s
+        nparam = 9 if is_3d else 8
+        dfv = xp.empty(nparam)
+        dfv[0] = sg1 * 2.0 * theta[0]
+        dfv[1] = sg2 * 2.0 * theta[1]
+        dfv[2] = sg3 * 2.0 * theta[2]
+        dfv[3] = sg4 * 2.0 * theta[3]
+        dfv[4] = sg5 * 2.0 * theta[4]
+        dfv[5] = sg6 * 2.0 * theta[5]
+        dfv[6] = sg7 * 2.0 * theta[6]
+        dfv[7] = sg8 * 2.0 * theta[7]
         if is_3d:
-            dfv[8] = float(sg9 * 2.0 * theta[8])
+            dfv[8] = sg9 * 2.0 * theta[8]
         return fv, dfv
 
     elif mver == 2:
@@ -490,7 +495,7 @@ def lambda_j_grad(theta, j, t, x, y, z, m, bk, tau_cut, r_cut,
         gamma = theta[6] * theta[6]
 
         s = mu * bk[j]
-        sg = np.zeros(8 if is_3d else 7)
+        sg = xp.zeros(8 if is_3d else 7)
         sg[0] = bk[j]
 
         if idx.size > 0:
@@ -560,24 +565,26 @@ def lambda_j_grad(theta, j, t, x, y, z, m, bk, tau_cut, r_cut,
                     eta = theta[7] * theta[7]
                     u = z[j] / Z_max
                     v = zi / Z_max
-                    safe_u = max(float(u), 1e-12)
-                    safe_1u = max(1.0 - float(u), 1e-12)
+                    u_val = float(u.item()) if hasattr(u, 'item') else float(u)
+                    safe_u = max(u_val, 1e-12)
+                    safe_1u = max(1.0 - u_val, 1e-12)
                     digamma_term = (v * special.digamma(eta * v + 1.0)
                                     + (1.0 - v) * special.digamma(eta * (1.0 - v) + 1.0)
                                     - special.digamma(eta + 2.0))
-                    dh_deta = h_val * H_norm * (v * math.log(safe_u)
+                    dh_deta = h_val * H_norm * (v * math.log(u_float)
                                                 + (1.0 - v) * math.log(safe_1u)
                                                 - digamma_term)
                     # h_val above already includes /H_norm; restore raw h for the
                     # chain rule and divide H_norm back after differentiation.
                     sg[7] = xp.sum(k_val * g_val_r * (f_val / h_val) * dh_deta)
 
-        fv = float(s)
-        dfv = np.empty(8 if is_3d else 7)
+        fv = s
+        nparam = 8 if is_3d else 7
+        dfv = xp.empty(nparam)
         for k in range(7):
-            dfv[k] = float(sg[k] * 2.0 * theta[k])
+            dfv[k] = sg[k] * 2.0 * theta[k]
         if is_3d:
-            dfv[7] = float(sg[7] * 2.0 * theta[7])
+            dfv[7] = sg[7] * 2.0 * theta[7]
         return fv, dfv
 
     else:
@@ -627,12 +634,14 @@ def integ_j(theta, j, t, x, y, m, px, py, tstart2, tlength,
         gamma = theta[7] * theta[7]
 
         # --- temporal integral (Omori-Utsu CDF over the study window) ------
-        if t[j] > tstart2:
-            ttemp = tlength - t[j]
+        # Extract CPU scalar once: one sync on GPU, zero cost on CPU.
+        t_j = float(t[j])
+        if t_j > tstart2:
+            ttemp = tlength - t_j
             gi = 1.0 - (1.0 + ttemp / c) ** (1.0 - p)
         else:
-            ttemp1 = tstart2 - t[j]
-            ttemp2 = tlength - t[j]
+            ttemp1 = tstart2 - t_j
+            ttemp2 = tlength - t_j
             gi1 = 1.0 - (1.0 + ttemp1 / c) ** (1.0 - p)
             gi2 = 1.0 - (1.0 + ttemp2 / c) ** (1.0 - p)
             gi = gi2 - gi1
@@ -642,8 +651,8 @@ def integ_j(theta, j, t, x, y, m, px, py, tstart2, tlength,
         w = [gamma, D, q, m[j]]
         si = poly_integ(fr, w, px, py, x[j], y[j])
         if F_norm is not None:
-            # Index a single scalar — float() works for both numpy and cupy.
-            F_at = float(F_norm[j]) if not np.isscalar(F_norm) else float(F_norm)
+            # Keep as GPU scalar — no sync needed.
+            F_at = F_norm[j]
             si = si / F_at
 
         sk = A * xp.exp(alpha * m[j])
@@ -665,16 +674,18 @@ def integ_j(theta, j, t, x, y, m, px, py, tstart2, tlength,
         gparam = [c, p]
         fparam = [D, gamma]
 
-        gi = gfunint(tlength - t[j], gparam)
-        if t[j] <= tstart2:
-            gi -= gfunint(tstart2 - t[j], gparam)
+        t_j = float(t[j])
+        gi = gfunint(tlength - t_j, gparam)
+        if t_j <= tstart2:
+            gi -= gfunint(tstart2 - t_j, gparam)
         gi = gi / G_norm
 
+        m_j = m[j]  # hoist: access once, not per polygon edge
         def _ffunrint2_wrap(r, w_unused):
-            return ffunrint2(r, m[j], fparam)
+            return ffunrint2(r, m_j, fparam)
         si = poly_integ(_ffunrint2_wrap, None, px, py, x[j], y[j])
 
-        sk = kappafun(m[j], kparam)
+        sk = kappafun(m_j, kparam)
 
         out = sk * gi * si
         if is_3d:
@@ -717,21 +728,22 @@ def integ_j_grad(theta, j, t, x, y, m, px, py, tstart2, tlength,
         q     = theta[6] * theta[6]
         gamma = theta[7] * theta[7]
 
-        # temporal integral + derivatives
-        if t[j] > tstart2:
-            ttemp = tlength - t[j]
+        # temporal integral + derivatives (extract CPU scalar once)
+        t_j = float(t[j])
+        if t_j > tstart2:
+            ttemp = tlength - t_j
             gi  = 1.0 - (1.0 + ttemp / c) ** (1.0 - p)
             gic = -(1.0 - gi) * (1.0 - p) * (1.0 / (c + ttemp) - 1.0 / c)
-            gip = -(1.0 - gi) * (xp.log(c) - xp.log(c + ttemp))
+            gip = -(1.0 - gi) * (math.log(c) - math.log(c + ttemp))
         else:
-            ttemp1 = tstart2 - t[j]
-            ttemp2 = tlength - t[j]
+            ttemp1 = tstart2 - t_j
+            ttemp2 = tlength - t_j
             gi1  = 1.0 - (1.0 + ttemp1 / c) ** (1.0 - p)
             gi2  = 1.0 - (1.0 + ttemp2 / c) ** (1.0 - p)
             gic1 = -(1.0 - gi1) * (1.0 - p) * (1.0 / (c + ttemp1) - 1.0 / c)
             gic2 = -(1.0 - gi2) * (1.0 - p) * (1.0 / (c + ttemp2) - 1.0 / c)
-            gip1 = -(1.0 - gi1) * (xp.log(c) - xp.log(c + ttemp1))
-            gip2 = -(1.0 - gi2) * (xp.log(c) - xp.log(c + ttemp2))
+            gip1 = -(1.0 - gi1) * (math.log(c) - math.log(c + ttemp1))
+            gip2 = -(1.0 - gi2) * (math.log(c) - math.log(c + ttemp2))
             gi  = gi2 - gi1
             gic = gic2 - gic1
             gip = gip2 - gip1
@@ -745,19 +757,20 @@ def integ_j_grad(theta, j, t, x, y, m, px, py, tstart2, tlength,
         gi_tot_dp = (gip * G_norm - gi * dG_dp) * invG * invG
 
         # spatial integrals + derivatives
-        w = [gamma, D, q, m[j]]
+        m_j = m[j]  # GPU scalar, accessed once
+        w = [gamma, D, q, m_j]
         si      = poly_integ(fr,        w, px, py, x[j], y[j])
         sid     = poly_integ(dD_fr,     w, px, py, x[j], y[j])
         siq     = poly_integ(dq_fr,     w, px, py, x[j], y[j])
         sigamma = poly_integ(dgamma_fr, w, px, py, x[j], y[j])
 
-        # Renormalize spatial + derivatives.
+        # Renormalize spatial + derivatives (keep GPU scalars, no float()).
         if F_norm is not None:
-            F_at = float(F_norm[j])
+            F_at = F_norm[j]
             dF_dD, dF_dq, dF_dgamma = F_grad
-            dF_dD_j = float(dF_dD[j]) if dF_dD is not None else 0.0
-            dF_dq_j = float(dF_dq[j]) if dF_dq is not None else 0.0
-            dF_dg_j = float(dF_dgamma[j]) if dF_dgamma is not None else 0.0
+            dF_dD_j = xp.asarray(dF_dD[j]) if dF_dD is not None else xp.array(0.0)
+            dF_dq_j = xp.asarray(dF_dq[j]) if dF_dq is not None else xp.array(0.0)
+            dF_dg_j = xp.asarray(dF_dgamma[j]) if dF_dgamma is not None else xp.array(0.0)
             invF = 1.0 / F_at
             si_tot = si * invF
             si_tot_dD = (sid * F_at - si * dF_dD_j) * invF * invF
@@ -769,16 +782,16 @@ def integ_j_grad(theta, j, t, x, y, m, px, py, tstart2, tlength,
             si_tot_dq = siq
             si_tot_dg = sigamma
 
-        sk = A * xp.exp(alpha * m[j])
+        sk = A * xp.exp(alpha * m_j)
         Hfactor = (integ_h / H_norm) if is_3d else 1.0
 
         fv = sk * gi_tot * si_tot * Hfactor
 
-        dfv = np.zeros(9 if is_3d else 8)
-        dfv[0] = 0.0
+        nparam = 9 if is_3d else 8
+        dfv = xp.zeros(nparam)
         dfv[1] = (sk * gi_tot * si_tot / A * 2.0 * theta[1]) * Hfactor
         dfv[2] = (sk * gi_tot_dc * si_tot * 2.0 * theta[2]) * Hfactor
-        dfv[3] = (sk * gi_tot * si_tot * m[j] * 2.0 * theta[3]) * Hfactor
+        dfv[3] = (sk * gi_tot * si_tot * m_j * 2.0 * theta[3]) * Hfactor
         dfv[4] = (sk * gi_tot_dp * si_tot * 2.0 * theta[4]) * Hfactor
         dfv[5] = (sk * gi_tot * si_tot_dD * 2.0 * theta[5]) * Hfactor
         dfv[6] = (sk * gi_tot * si_tot_dq * 2.0 * theta[6]) * Hfactor
@@ -798,18 +811,20 @@ def integ_j_grad(theta, j, t, x, y, m, px, py, tstart2, tlength,
         gparam = [c, p]
         fparam = [D, gamma]
 
-        int_part2 = dgfunint(tlength - t[j], gparam)
-        if t[j] <= tstart2:
-            gtmp = dgfunint(tstart2 - t[j], gparam)
+        t_j = float(t[j])
+        int_part2 = dgfunint(tlength - t_j, gparam)
+        if t_j <= tstart2:
+            gtmp = dgfunint(tstart2 - t_j, gparam)
             int_part2 = [int_part2[k] - gtmp[k] for k in range(3)]
 
+        m_j = m[j]  # hoist: access once
         def _wrap_ffunrint2_k(k_idx):
             def _f(r, w_unused):
-                return dffunrint2(r, m[j], fparam)[k_idx]
+                return dffunrint2(r, m_j, fparam)[k_idx]
             return _f
         int_part3 = [poly_integ(_wrap_ffunrint2_k(k_idx), None, px, py, x[j], y[j])
                      for k_idx in range(3)]
-        int_part1 = dkappafun(m[j], kparam)
+        int_part1 = dkappafun(m_j, kparam)
 
         # Renormalize temporal piece.
         dG_dc, dG_dp = G_grad
@@ -823,8 +838,8 @@ def integ_j_grad(theta, j, t, x, y, m, px, py, tstart2, tlength,
         si_tot = int_part3[0]
         fv = int_part1[0] * gi_tot * si_tot * Hfactor
 
-        dfv = np.zeros(8 if is_3d else 7)
-        dfv[0] = 0.0
+        nparam = 8 if is_3d else 7
+        dfv = xp.zeros(nparam)
         dfv[1] = (int_part1[1] * gi_tot * si_tot * 2.0 * theta[1]) * Hfactor
         dfv[2] = (int_part1[0] * gi_tot_dc * si_tot * 2.0 * theta[2]) * Hfactor
         dfv[3] = (int_part1[2] * gi_tot * si_tot * 2.0 * theta[3]) * Hfactor
@@ -931,3 +946,710 @@ def lambda_x(t_val, x_val, y_val, theta, t, x, y, m,
 
     else:
         raise ValueError(f"Unknown mver={mver}; expected 1 or 2")
+
+
+# ===================================================================
+# Batch (vectorized) functions — operate on ALL N events at once
+# ===================================================================
+
+def lambda_j_batch(theta, t, x, y, z, m, bk, tau_cut, r_cut,
+                    mver=1, is_3d=False, tperiod=None, norms=None,
+                    nbr_lists=None, flag=None):
+    """Vectorized conditional intensity for all events simultaneously.
+
+    Returns an array of shape ``(N,)`` — the intensity at each event.
+    This avoids N GPU synchronizations compared to calling ``lambda_j`` in a
+    Python loop.
+    """
+    xp = get_xp()
+    norms = _norms_or_default(norms)
+    G_norm = norms['G_norm']
+    F_norm = norms['F_norm']
+    H_norm = norms['H_norm']
+    N = t.shape[0]
+
+    mu = theta[0] * theta[0]
+    s = xp.full(N, mu) * bk
+
+    if mver == 1:
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        q     = theta[6] * theta[6]
+        gamma = theta[7] * theta[7]
+    else:
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        gamma = theta[6] * theta[6]
+
+    # Compute contributions from all parent pairs using neighbor lists.
+    # Build (N,) output: for each target j, sum over parents i in nbr_lists[j].
+    #
+    # Strategy: for each j, we already have the nbr_lists from KDTree.
+    # We loop over j but keep ALL per-parent operations on the GPU, doing only
+    # ONE .item() per event (instead of per-parent).
+    # For N~10k with small neighbor lists, this is still fast.
+    #
+    # For truly O(N²) without KDTree, use a dense matrix approach.
+
+    if flag is not None:
+        flag_np = np.asarray(flag)
+    else:
+        flag_np = np.ones(N, dtype=int)
+
+    for j in range(N):
+        if flag_np[j] != 1 or j == 0:
+            continue
+
+        # --- Resolve parent indices (same as per-event lambda_j) ---
+        if nbr_lists is not None and j < len(nbr_lists):
+            idx = np.asarray(nbr_lists[j], dtype=np.intp)
+        else:
+            idx = np.arange(j, dtype=np.intp)
+
+        if idx.size == 0:
+            continue
+
+        ti = t[idx]
+        xi = x[idx]
+        yi = y[idx]
+        mi = m[idx]
+        delta = t[j] - ti
+        r2 = (x[j] - xi) ** 2 + (y[j] - yi) ** 2
+
+        # Legacy mask path (no KDTree)
+        if nbr_lists is None or j >= len(nbr_lists):
+            if tau_cut is not None and tau_cut < float('inf'):
+                m_t = (t[j] - ti) <= tau_cut
+                delta = delta[m_t]; r2 = r2[m_t]; mi = mi[m_t]
+            if r_cut is not None and r_cut < float('inf'):
+                m_r = xp.sqrt(r2) <= r_cut
+                delta = delta[m_r]; r2 = r2[m_r]; mi = mi[m_r]
+            if delta.size == 0:
+                continue
+
+        zi = None
+        if is_3d:
+            zi = z[idx]
+
+        if mver == 1:
+            part1 = xp.exp(alpha * mi)
+            part2 = (p - 1.0) / c * (1.0 + delta / c) ** (-p)
+            sig = D * xp.exp(gamma * mi)
+            part3 = ((q - 1.0) / (sig * xp.pi) * (1.0 + r2 / sig) ** (-q))
+
+            invG = 1.0 / G_norm
+            part2 = part2 * invG
+            if F_norm is not None:
+                invF = 1.0 / xp.asarray(
+                    F_norm[idx] if _is_xp_array(F_norm, xp)
+                    else np.asarray(F_norm, dtype=np.float64)[idx],
+                    dtype=part3.dtype)
+                part3 = part3 * invF
+
+            if is_3d:
+                from .backend import get_special
+                special = get_special()
+                Z_max = tperiod[2]
+                eta = theta[8] * theta[8]
+                u = z[j] / Z_max
+                v = zi / Z_max
+                log_h = _depth_log_h(u, v, eta, Z_max, special)
+                part3 = part3 * xp.exp(log_h) / H_norm
+
+            s = s.at(j, s[j] + A * xp.sum(part1 * part2 * part3))
+        else:  # mver == 2
+            k_val = A * xp.exp(alpha * mi)
+            g_val = (p - 1.0) / c * (1.0 + delta / c) ** (-p)
+            sig_sq = D * xp.exp(gamma * mi)
+            f_val = xp.exp(-r2 / (2.0 * sig_sq)) / (2.0 * xp.pi * sig_sq)
+
+            invG = 1.0 / G_norm
+            g_val = g_val * invG
+
+            if is_3d:
+                from .backend import get_special
+                special = get_special()
+                Z_max = tperiod[2]
+                eta = theta[7] * theta[7]
+                u = z[j] / Z_max
+                v = zi / Z_max
+                log_h = _depth_log_h(u, v, eta, Z_max, special)
+                f_val = f_val * xp.exp(log_h) / H_norm
+
+            s = s.at(j, s[j] + xp.sum(k_val * g_val * f_val))
+
+    return s
+
+
+def integ_j_batch(theta, t, x, y, m, px, py, tstart2, tlength,
+                  mver=1, is_3d=False, norms=None, Z_max=None,
+                  integ_h=None):
+    """Vectorized space-time integral for all events simultaneously.
+
+    The temporal part is fully vectorized.  The spatial polygon integral is
+    inherently per-event (depends on event coordinates), but we extract CPU
+    scalars once and run it on pure Python/NumPy, avoiding per-event GPU syncs.
+    """
+    xp = get_xp()
+    norms = _norms_or_default(norms)
+    G_norm = norms['G_norm']
+    F_norm = norms['F_norm']
+    H_norm = norms['H_norm']
+    N = t.shape[0]
+
+    if integ_h is None:
+        integ_h = 1.0
+
+    # Pre-extract CPU scalars for the per-event spatial loop.
+    # This is the KEY optimization: all scalar access happens on CPU, zero GPU syncs.
+    t_np = np.asarray(t)
+    x_np = np.asarray(x)
+    y_np = np.asarray(y)
+    m_np = np.asarray(m)
+    px_np = np.asarray(px)
+    py_np = np.asarray(py)
+    if F_norm is not None:
+        F_norm_np = np.asarray(F_norm, dtype=np.float64)
+    else:
+        F_norm_np = None
+
+    Hfactor = (integ_h / H_norm) if is_3d else 1.0
+
+    out = np.zeros(N)
+
+    if mver == 1:
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        q     = theta[6] * theta[6]
+        gamma = theta[7] * theta[7]
+
+        # Temporal part — fully vectorized
+        ttemp = tlength - t_np
+        ttemp1 = tstart2 - t_np
+        # Vectorized: if t[j] > tstart2 use single CDF, else difference of two CDFs
+        after = t_np > tstart2
+        gi = np.where(after,
+                      1.0 - (1.0 + ttemp / c) ** (1.0 - p),
+                      (1.0 - (1.0 + ttemp / c) ** (1.0 - p))
+                      - (1.0 - (1.0 + ttemp1 / c) ** (1.0 - p)))
+        gi = gi / G_norm
+
+        # Spatial part — per-event loop on CPU scalars (no GPU syncs!)
+        w_cache = {}  # cache by unique magnitude index
+        si_arr = np.empty(N)
+        for j in range(N):
+            w = [gamma, D, q, m_np[j]]
+            si_arr[j] = poly_integ(fr, w, px_np, py_np,
+                                   x_np[j], y_np[j])
+
+        # Renormalize spatial
+        if F_norm_np is not None:
+            si_arr = si_arr / F_norm_np
+
+        sk = A * np.exp(alpha * m_np)
+        out = sk * gi * si_arr * Hfactor
+
+    elif mver == 2:
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        gamma = theta[6] * theta[6]
+
+        fparam = [D, gamma]
+
+        # Temporal part — vectorized
+        ttemp_end = tlength - t_np
+        ttemp_start = tstart2 - t_np
+        gi_end = np.where(ttemp_end > 0,
+                          1.0 - (1.0 + ttemp_end / c) ** (1.0 - p), 0.0)
+        gi_start = np.where(ttemp_start > 0,
+                            1.0 - (1.0 + ttemp_start / c) ** (1.0 - p), 0.0)
+        after = t_np > tstart2
+        gi = np.where(after, gi_end, gi_end - gi_start)
+        gi = gi / G_norm
+
+        # Spatial part — per-event loop on CPU scalars
+        si_arr = np.empty(N)
+        for j in range(N):
+            def _ffunrint2_wrap(r, w_unused, _mj=m_np[j]):
+                return ffunrint2(r, _mj, fparam)
+            si_arr[j] = poly_integ(_ffunrint2_wrap, None, px_np, py_np,
+                                   x_np[j], y_np[j])
+
+        sk = A * np.exp(alpha * m_np)
+        out = sk * gi * si_arr * Hfactor
+
+    return out
+
+
+def lambda_j_grad_batch(theta, t, x, y, z, m, bk, tau_cut, r_cut,
+                         mver=1, is_3d=False, tperiod=None, norms=None,
+                         nbr_lists=None, flag=None):
+    """Vectorized conditional intensity AND gradient for all events.
+
+    Returns ``(fv, dfv)`` where ``fv`` is shape ``(N,)`` and ``dfv`` is
+    shape ``(N, dimparam)``.
+    """
+    xp = get_xp()
+    norms = _norms_or_default(norms)
+    G_norm = norms['G_norm']
+    F_norm = norms['F_norm']
+    H_norm = norms['H_norm']
+    G_grad = norms['G_grad']
+    F_grad = norms['F_grad']
+    H_grad = norms['H_grad']
+    N = t.shape[0]
+    dimparam = len(theta)
+
+    mu = theta[0] * theta[0]
+    fv = xp.full(N, mu) * bk
+    dfv = xp.zeros((N, dimparam))
+
+    # Background gradient (constant)
+    dfv[:, 0] = bk * 2.0 * theta[0]
+
+    if mver == 1:
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        q     = theta[6] * theta[6]
+        gamma = theta[7] * theta[7]
+        invG = 1.0 / G_norm
+        dG_dc, dG_dp = G_grad
+    else:
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        gamma = theta[6] * theta[6]
+        invG = 1.0 / G_norm
+        dG_dc, dG_dp = G_grad
+
+    if flag is not None:
+        flag_np = np.asarray(flag)
+    else:
+        flag_np = np.ones(N, dtype=int)
+
+    for j in range(N):
+        if flag_np[j] != 1 or j == 0:
+            continue
+
+        if nbr_lists is not None and j < len(nbr_lists):
+            idx = np.asarray(nbr_lists[j], dtype=np.intp)
+        else:
+            idx = np.arange(j, dtype=np.intp)
+
+        if idx.size == 0:
+            continue
+
+        ti = t[idx]; xi = x[idx]; yi = y[idx]; mi = m[idx]
+        delta = t[j] - ti
+        r2 = (x[j] - xi) ** 2 + (y[j] - yi) ** 2
+
+        if nbr_lists is None or j >= len(nbr_lists):
+            if tau_cut is not None and tau_cut < float('inf'):
+                m_t = (t[j] - ti) <= tau_cut
+                delta = delta[m_t]; r2 = r2[m_t]; mi = mi[m_t]
+            if r_cut is not None and r_cut < float('inf'):
+                m_r = xp.sqrt(r2) <= r_cut
+                delta = delta[m_r]; r2 = r2[m_r]; mi = mi[m_r]
+            if delta.size == 0:
+                continue
+
+        zi = None
+        if is_3d:
+            zi = z[idx]
+
+        if mver == 1:
+            part1 = xp.exp(alpha * mi)
+            part2 = (p - 1.0) / c * (1.0 + delta / c) ** (-p)
+            sig = D * xp.exp(gamma * mi)
+            part3 = ((q - 1.0) / (sig * xp.pi) * (1.0 + r2 / sig) ** (-q))
+
+            # Renormalization
+            part2_r = part2 * invG
+
+            F_at = None
+            if F_norm is not None:
+                if _is_xp_array(F_norm, xp):
+                    F_at = xp.asarray(F_norm)[idx]
+                else:
+                    F_at = np.asarray(F_norm, dtype=np.float64)[idx]
+                if F_at.shape[0] != part3.shape[0]:
+                    from .renorm import spatial_norm
+                    F_at = spatial_norm(D, gamma, q, mi,
+                                        R_max=np.sqrt(r2.max()) if r2.size else 0.0)
+            invF_val = 1.0
+            if F_norm is not None:
+                invF_val = 1.0 / xp.asarray(F_at, dtype=part3.dtype) if _is_xp_array(F_at, xp) \
+                    else 1.0 / np.asarray(F_at, dtype=np.float64)
+                part3_r = part3 * invF_val
+            else:
+                part3_r = part3
+
+            h_val = None
+            if is_3d:
+                from .backend import get_special
+                special = get_special()
+                Z_max = tperiod[2]
+                eta = theta[8] * theta[8]
+                u = z[j] / Z_max
+                v = zi / Z_max
+                log_h = _depth_log_h(u, v, eta, Z_max, special)
+                h_val = xp.exp(log_h) / H_norm
+                part3_r = part3_r * h_val
+
+            hfactor = h_val if is_3d else 1.0
+
+            kA = A * part1
+            kern = part2_r * part3_r
+            contrib = kA * kern
+            s_contrib = xp.sum(contrib)
+            fv = fv.at(j, fv[j] + s_contrib)
+
+            # --- gradient contributions ---
+            sg2 = xp.sum(part1 * kern)
+            sg3 = xp.sum(kA * (part2 * (-1.0 / c + p * delta / (c * (c + delta))) * invG
+                                - part2 * invG * invG * dG_dc) * part3_r)
+            sg4 = xp.sum(A * part1 * mi * kern)
+            sg5 = xp.sum(kA * (part2 * (1.0 / (p - 1.0) - xp.log(1.0 + delta / c)) * invG
+                                - part2 * invG * invG * dG_dp) * part3_r)
+
+            # Spatial derivatives
+            dF_dD, dF_dq, dF_dgamma = F_grad
+            part3_dD = part3 / D * (-1.0 + q * (1.0 - 1.0 / (1.0 + r2 / sig)))
+            if F_norm is not None and dF_dD is not None:
+                dF_D_at = xp.asarray(np.asarray(dF_dD)[idx], dtype=part3.dtype) \
+                    if not _is_xp_array(dF_dD, xp) else dF_dD[idx]
+                sg6 = xp.sum(kA * part2_r * hfactor * (
+                    part3_dD * invF_val - part3 * invF_val * invF_val * dF_D_at))
+            else:
+                sg6 = xp.sum(kA * part2_r * hfactor * part3_dD)
+
+            part3_dq = part3 * (1.0 / (q - 1.0) - xp.log(1.0 + r2 / sig))
+            if F_norm is not None and dF_dq is not None:
+                dF_q_at = xp.asarray(np.asarray(dF_dq)[idx], dtype=part3.dtype) \
+                    if not _is_xp_array(dF_dq, xp) else dF_dq[idx]
+                sg7 = xp.sum(kA * part2_r * hfactor * (
+                    part3_dq * invF_val - part3 * invF_val * invF_val * dF_q_at))
+            else:
+                sg7 = xp.sum(kA * part2_r * hfactor * part3_dq)
+
+            part3_dgamma = part3 * (-mi + q * mi * (1.0 - 1.0 / (1.0 + r2 / sig)))
+            if F_norm is not None and dF_dgamma is not None:
+                dF_g_at = xp.asarray(np.asarray(dF_dgamma)[idx], dtype=part3.dtype) \
+                    if not _is_xp_array(dF_dgamma, xp) else dF_dgamma[idx]
+                sg8 = xp.sum(kA * part2_r * hfactor * (
+                    part3_dgamma * invF_val - part3 * invF_val * invF_val * dF_g_at))
+            else:
+                sg8 = xp.sum(kA * part2_r * hfactor * part3_dgamma)
+
+            sg9 = xp.zeros(1)
+            if is_3d:
+                from .backend import get_special
+                special = get_special()
+                Z_max = tperiod[2]
+                eta = theta[8] * theta[8]
+                u = z[j] / Z_max
+                v = zi / Z_max
+                safe_u = max(float(u), 1e-12)
+                safe_1u = max(1.0 - float(u), 1e-12)
+                digamma_term = (v * special.digamma(eta * v + 1.0)
+                                + (1.0 - v) * special.digamma(eta * (1.0 - v) + 1.0)
+                                - special.digamma(eta + 2.0))
+                dh_deta = h_val * (v * math.log(safe_u)
+                                   + (1.0 - v) * math.log(safe_1u)
+                                   - digamma_term)
+                sg9 = xp.sum(kA * part2_r * part3 * invF_val * dh_deta
+                             if F_norm is not None else
+                             kA * part2_r * part3 * dh_deta)
+
+            # Chain-rule: d/d(theta_k) = sg_k * 2 * theta_k
+            dfv = dfv.at(j, 0, dfv[j, 0])
+            dfv = dfv.at(j, 1, sg2.item() * 2.0 * theta[1])
+            dfv = dfv.at(j, 2, sg3.item() * 2.0 * theta[2])
+            dfv = dfv.at(j, 3, sg4.item() * 2.0 * theta[3])
+            dfv = dfv.at(j, 4, sg5.item() * 2.0 * theta[4])
+            dfv = dfv.at(j, 5, sg6.item() * 2.0 * theta[5])
+            dfv = dfv.at(j, 6, sg7.item() * 2.0 * theta[6])
+            dfv = dfv.at(j, 7, sg8.item() * 2.0 * theta[7])
+            if is_3d:
+                dfv = dfv.at(j, 8, sg9.item() * 2.0 * theta[8])
+
+        else:  # mver == 2
+            k_val = A * xp.exp(alpha * mi)
+            g_val = (p - 1.0) / c * (1.0 + delta / c) ** (-p)
+            sig_sq = D * xp.exp(gamma * mi)
+            f_val = xp.exp(-r2 / (2.0 * sig_sq)) / (2.0 * xp.pi * sig_sq)
+
+            g_val_r = g_val * invG
+
+            h_val = None
+            if is_3d:
+                from .backend import get_special
+                special = get_special()
+                Z_max = tperiod[2]
+                eta = theta[7] * theta[7]
+                u = z[j] / Z_max
+                v = zi / Z_max
+                log_h = _depth_log_h(u, v, eta, Z_max, special)
+                h_val = xp.exp(log_h) / H_norm
+                f_val = f_val * h_val
+
+            kern = g_val_r * f_val
+            contrib = k_val * kern
+            s_contrib = xp.sum(contrib)
+            fv = fv.at(j, fv[j] + s_contrib)
+
+            # Gradients
+            sg1 = xp.sum(xp.exp(alpha * mi) * kern)
+            g_val_dc = g_val * (-1.0 / c + p * delta / (c * (c + delta)))
+            sg2 = xp.sum(k_val * (g_val_dc * invG - g_val * invG * invG * dG_dc) * f_val)
+            sg3 = xp.sum(A * mi * xp.exp(alpha * mi) * kern)
+            g_val_dp = g_val * (1.0 / (p - 1.0) - xp.log(1.0 + delta / c))
+            sg4 = xp.sum(k_val * (g_val_dp * invG - g_val * invG * invG * dG_dp) * f_val)
+            f_val_D = f_val * (r2 / (2.0 * sig_sq * D) - 1.0 / D)
+            sg5 = xp.sum(k_val * g_val_r * f_val_D)
+            f_val_gamma = f_val * (r2 / (2.0 * sig_sq) - 1.0) * mi
+            sg6 = xp.sum(k_val * g_val_r * f_val_gamma)
+
+            dfv = dfv.at(j, 1, sg1.item() * 2.0 * theta[1])
+            dfv = dfv.at(j, 2, sg2.item() * 2.0 * theta[2])
+            dfv = dfv.at(j, 3, sg3.item() * 2.0 * theta[3])
+            dfv = dfv.at(j, 4, sg4.item() * 2.0 * theta[4])
+            dfv = dfv.at(j, 5, sg5.item() * 2.0 * theta[5])
+            dfv = dfv.at(j, 6, sg6.item() * 2.0 * theta[6])
+
+            if is_3d:
+                from .backend import get_special
+                special = get_special()
+                Z_max = tperiod[2]
+                eta = theta[7] * theta[7]
+                u = z[j] / Z_max
+                v = zi / Z_max
+                safe_u = max(float(u), 1e-12)
+                safe_1u = max(1.0 - float(u), 1e-12)
+                digamma_term = (v * special.digamma(eta * v + 1.0)
+                                + (1.0 - v) * special.digamma(eta * (1.0 - v) + 1.0)
+                                - special.digamma(eta + 2.0))
+                dh_deta = h_val * H_norm * (v * math.log(safe_u)
+                                            + (1.0 - v) * math.log(safe_1u)
+                                            - digamma_term)
+                sg7 = xp.sum(k_val * g_val_r * (f_val / h_val) * dh_deta)
+                dfv = dfv.at(j, 7, sg7.item() * 2.0 * theta[7])
+
+    return fv, dfv
+
+
+def integ_j_grad_batch(theta, t, x, y, m, px, py, tstart2, tlength,
+                       mver=1, is_3d=False, norms=None, Z_max=None,
+                       integ_h=None):
+    """Vectorized space-time integral AND gradient for all events.
+
+    Temporal part fully vectorized.  Spatial polygon integral runs per-event
+    on CPU scalars (no GPU syncs in the inner loop).
+    """
+    xp = get_xp()
+    norms = _norms_or_default(norms)
+    G_norm = norms['G_norm']
+    F_norm = norms['F_norm']
+    H_norm = norms['H_norm']
+    G_grad = norms['G_grad']
+    F_grad = norms['F_grad']
+    N = t.shape[0]
+
+    if integ_h is None:
+        integ_h = 1.0
+
+    # Pre-extract CPU scalars
+    t_np = np.asarray(t)
+    x_np = np.asarray(x)
+    y_np = np.asarray(y)
+    m_np = np.asarray(m)
+    px_np = np.asarray(px)
+    py_np = np.asarray(py)
+    if F_norm is not None:
+        F_norm_np = np.asarray(F_norm, dtype=np.float64)
+        dF_dD_np = np.asarray(F_grad[0], dtype=np.float64) if F_grad[0] is not None else None
+        dF_dq_np = np.asarray(F_grad[1], dtype=np.float64) if F_grad[1] is not None else None
+        dF_dg_np = np.asarray(F_grad[2], dtype=np.float64) if F_grad[2] is not None else None
+    else:
+        F_norm_np = dF_dD_np = dF_dq_np = dF_dg_np = None
+
+    Hfactor = (integ_h / H_norm) if is_3d else 1.0
+
+    if mver == 1:
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        q     = theta[6] * theta[6]
+        gamma = theta[7] * theta[7]
+
+        dimparam = 9 if is_3d else 8
+        fv = np.zeros(N)
+        dfv = np.zeros((N, dimparam))
+
+        # Temporal part — fully vectorized on CPU (scalar ops)
+        ttemp = tlength - t_np
+        ttemp1 = tstart2 - t_np
+        after = t_np > tstart2
+        gi = np.where(after,
+                      1.0 - (1.0 + ttemp / c) ** (1.0 - p),
+                      (1.0 - (1.0 + ttemp / c) ** (1.0 - p))
+                      - (1.0 - (1.0 + ttemp1 / c) ** (1.0 - p)))
+        gi = gi / G_norm
+
+        # Renormalized temporal derivatives (vectorized)
+        dG_dc, dG_dp = G_grad
+        invG = 1.0 / G_norm
+        invG2 = invG * invG
+
+        # gic and gip for both branches, then renormalize
+        one_minus_gi = 1.0 - np.where(after,
+                                      1.0 - (1.0 + ttemp / c) ** (1.0 - p),
+                                      (1.0 - (1.0 + ttemp / c) ** (1.0 - p))
+                                      - (1.0 - (1.0 + ttemp1 / c) ** (1.0 - p)))
+        # For after:  gic = -one_minus_gi * (1-p) * (1/(c+ttemp) - 1/c)
+        #             gip = -one_minus_gi * (log(c) - log(c+ttemp))
+        # For before: gic = gic2 - gic1  (same formula with ttemp vs ttemp1)
+        #             gip = gip2 - gip1
+        safe_ttemp = np.maximum(ttemp, 1e-300)
+        safe_ttemp1 = np.maximum(ttemp1, 1e-300)
+        gic_after = -one_minus_gi * (1.0 - p) * (1.0 / (c + safe_ttemp) - 1.0 / c)
+        gip_after = -one_minus_gi * (np.log(c) - np.log(c + safe_ttemp))
+        # Before branch: compute gi1, gi2 separately
+        gi1 = 1.0 - (1.0 + safe_ttemp1 / c) ** (1.0 - p)
+        gi2 = 1.0 - (1.0 + safe_ttemp / c) ** (1.0 - p)
+        omg1 = 1.0 - gi1
+        omg2 = 1.0 - gi2
+        gic1 = -omg1 * (1.0 - p) * (1.0 / (c + safe_ttemp1) - 1.0 / c)
+        gic2 = -omg2 * (1.0 - p) * (1.0 / (c + safe_ttemp) - 1.0 / c)
+        gip1 = -omg1 * (np.log(c) - np.log(c + safe_ttemp1))
+        gip2 = -omg2 * (np.log(c) - np.log(c + safe_ttemp))
+
+        gic = np.where(after, gic_after, gic2 - gic1)
+        gip = np.where(after, gip_after, gip2 - gip1)
+
+        gi_tot = gi  # already divided by G_norm above
+        gi_tot_dc = (gic * G_norm - gi * dG_dc) * invG2
+        gi_tot_dp = (gip * G_norm - gi * dG_dp) * invG2
+
+        # Spatial part — per-event on CPU scalars
+        si_arr = np.empty(N)
+        sid_arr = np.empty(N)
+        siq_arr = np.empty(N)
+        sig_arr = np.empty(N)
+
+        for j in range(N):
+            w = [gamma, D, q, m_np[j]]
+            si_arr[j] = poly_integ(fr, w, px_np, py_np, x_np[j], y_np[j])
+            sid_arr[j] = poly_integ(dD_fr, w, px_np, py_np, x_np[j], y_np[j])
+            siq_arr[j] = poly_integ(dq_fr, w, px_np, py_np, x_np[j], y_np[j])
+            sig_arr[j] = poly_integ(dgamma_fr, w, px_np, py_np, x_np[j], y_np[j])
+
+        # Renormalize spatial
+        if F_norm_np is not None:
+            invF = 1.0 / F_norm_np
+            invF2 = invF * invF
+            dF_dD_j = dF_dD_np if dF_dD_np is not None else 0.0
+            dF_dq_j = dF_dq_np if dF_dq_np is not None else 0.0
+            dF_dg_j = dF_dg_np if dF_dg_np is not None else 0.0
+            si_tot = si_arr * invF
+            si_tot_dD = (sid_arr * F_norm_np - si_arr * dF_dD_j) * invF2
+            si_tot_dq = (siq_arr * F_norm_np - si_arr * dF_dq_j) * invF2
+            si_tot_dg = (sig_arr * F_norm_np - si_arr * dF_dg_j) * invF2
+        else:
+            si_tot = si_arr
+            si_tot_dD = sid_arr
+            si_tot_dq = siq_arr
+            si_tot_dg = sig_arr
+
+        sk = A * np.exp(alpha * m_np)
+        fv = sk * gi_tot * si_tot * Hfactor
+
+        dfv[:, 1] = (sk * gi_tot * si_tot / A * 2.0 * theta[1]) * Hfactor
+        dfv[:, 2] = (sk * gi_tot_dc * si_tot * 2.0 * theta[2]) * Hfactor
+        dfv[:, 3] = (sk * gi_tot * si_tot * m_np * 2.0 * theta[3]) * Hfactor
+        dfv[:, 4] = (sk * gi_tot_dp * si_tot * 2.0 * theta[4]) * Hfactor
+        dfv[:, 5] = (sk * gi_tot * si_tot_dD * 2.0 * theta[5]) * Hfactor
+        dfv[:, 6] = (sk * gi_tot * si_tot_dq * 2.0 * theta[6]) * Hfactor
+        dfv[:, 7] = (sk * gi_tot * si_tot_dg * 2.0 * theta[7]) * Hfactor
+
+    elif mver == 2:
+        A     = theta[1] * theta[1]
+        c     = theta[2] * theta[2]
+        alpha = theta[3] * theta[3]
+        p     = theta[4] * theta[4]
+        D     = theta[5] * theta[5]
+        gamma = theta[6] * theta[6]
+
+        dimparam = 8 if is_3d else 7
+        fv = np.zeros(N)
+        dfv = np.zeros((N, dimparam))
+
+        kparam = [A, alpha]
+        fparam = [D, gamma]
+
+        # Temporal part — vectorized
+        dG_dc, dG_dp = G_grad
+        invG = 1.0 / G_norm
+        invG2 = invG * invG
+
+        safe_ttemp = np.maximum(tlength - t_np, 0.0)
+        safe_ttemp1 = np.maximum(tstart2 - t_np, 0.0)
+
+        # dgfunint returns [value, d_c, d_p]
+        int_part2_v = np.array([dgfunint(tlength - t_np[j], [c, p]) for j in range(N)],
+                               dtype=np.float64)  # (N, 3)
+        # For events before tstart2, subtract
+        int_part2_v_final = np.copy(int_part2_v)
+        for j in range(N):
+            if t_np[j] <= tstart2:
+                gtmp = dgfunint(tstart2 - t_np[j], [c, p])
+                int_part2_v_final[j, 0] -= gtmp[0]
+                int_part2_v_final[j, 1] -= gtmp[1]
+                int_part2_v_final[j, 2] -= gtmp[2]
+
+        gi_tot = int_part2_v_final[:, 0] * invG
+        gi_tot_dc = (int_part2_v_final[:, 1] * G_norm - int_part2_v_final[:, 0] * dG_dc) * invG2
+        gi_tot_dp = (int_part2_v_final[:, 2] * G_norm - int_part2_v_final[:, 0] * dG_dp) * invG2
+
+        # Spatial part — per-event on CPU scalars (3 poly_integ calls per event)
+        int_part3_v = np.zeros((N, 3))
+        for j in range(N):
+            for k_idx in range(3):
+                def _wrap_ffunrint2_k(r, w_unused, _mj=m_np[j], _fparam=fparam, _k=k_idx):
+                    return dffunrint2(r, _mj, _fparam)[_k]
+                int_part3_v[j, k_idx] = poly_integ(_wrap_ffunrint2_k, None, px_np, py_np,
+                                                    x_np[j], y_np[j])
+
+        int_part1_v = np.array([dkappafun(m_np[j], kparam) for j in range(N)],
+                               dtype=np.float64)  # (N, 3)
+
+        si_tot = int_part3_v[:, 0]
+        fv = int_part1_v[:, 0] * gi_tot * si_tot * Hfactor
+
+        dfv[:, 1] = (int_part1_v[:, 1] * gi_tot * si_tot * 2.0 * theta[1]) * Hfactor
+        dfv[:, 2] = (int_part1_v[:, 0] * gi_tot_dc * si_tot * 2.0 * theta[2]) * Hfactor
+        dfv[:, 3] = (int_part1_v[:, 2] * gi_tot * si_tot * 2.0 * theta[3]) * Hfactor
+        dfv[:, 4] = (int_part1_v[:, 0] * gi_tot_dp * si_tot * 2.0 * theta[4]) * Hfactor
+        dfv[:, 5] = (int_part1_v[:, 0] * gi_tot * int_part3_v[:, 1] * 2.0 * theta[5]) * Hfactor
+        dfv[:, 6] = (int_part1_v[:, 0] * gi_tot * int_part3_v[:, 2] * 2.0 * theta[6]) * Hfactor
+
+    return fv, dfv

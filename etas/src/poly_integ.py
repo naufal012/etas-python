@@ -105,12 +105,13 @@ def poly_integ(func, funcpara, px, py, cx, cy, ndiv=1000):
     nv = len(px) - 1
 
     total = 0.0
+    # Hoist the arange out of the edge loop — one allocation instead of N.
+    k = xp.arange(ndiv, dtype=float)
+    t0 = k / ndiv
+    t1 = (k + 1.0) / ndiv
+
     for j in range(nv):
         # Create vectors for all ndiv segments of this edge
-        k = xp.arange(ndiv, dtype=float)
-        t0 = k / ndiv
-        t1 = (k + 1.0) / ndiv
-        
         sx1 = px[j] + t0 * (px[j + 1] - px[j])
         sy1 = py[j] + t0 * (py[j + 1] - py[j])
         sx2 = px[j] + t1 * (px[j + 1] - px[j])
@@ -171,7 +172,9 @@ def poly_integ(func, funcpara, px, py, cx, cy, ndiv=1000):
         f3 = func(r2_m, funcpara)
         
         val = sign_m * (f1 / 6.0 + f2 * 2.0 / 3.0 + f3 / 6.0) * theta_m
-        total += float(xp.sum(val))
+        # Use .item() instead of float(xp.sum(...)) to avoid double-sync on CuPy.
+        # .item() is equivalent but more idiomatic; on NumPy there is no difference.
+        total += val.sum().item()
         
     return total
 

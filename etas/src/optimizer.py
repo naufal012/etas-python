@@ -33,60 +33,143 @@ def _norm(x):
     return math.sqrt(sum(xi * xi for xi in x))
 
 
-def _precompute(tht, revents, mver, is_3d, eps_t, eps_s, eps_z, Z_max, tau_cut, r_cut):
-    """Build the renorm dict + NeighborIndex for one likelihood evaluation.
+class _DataContext:
+    """Holds catalog arrays resident on the active backend for the whole fit.
 
-    Returns ``(norms, nbr_index, nbr_lists)``.  ``nbr_index`` is None when no
-    cutoffs are active (so callers can skip KDTree work entirely).
+    Built once in :func:`dfp_fit` and passed to every likelihood/gradient/
+    line-search evaluation.  This eliminates the per-eval GPU<->CPU round-trip
+    that previously happened at the top of ``_loglkhd`` / ``_loglkhd_gr``
+    (``revents.get()`` followed by ``xp.asarray(col)`` on every column).
     """
-    xp = _xp()
-    param = tht ** 2          # natural parameters
-    # revents may be on either backend; extract column 3 (magnitudes) to numpy.
-    if hasattr(revents, 'get'):
-        m = revents[:, 3].get()
-    elif hasattr(revents, '__array__') and not isinstance(revents, np.ndarray):
-        m = np.asarray(revents[:, 3])
-    else:
-        m = revents[:, 3]
 
-    norms = compute_all_norms(param, m, mver, eps_t=eps_t, eps_s=eps_s,
-                              eps_z=eps_z, Z_max=Z_max)
+    __slots__ = ('t', 'x', 'y', 'm', 'flag_np', 'bk', 'z',
+                 'px', 'py', 'N', 'revents', 'rpoly', 'm_np', 'revents_np')
 
-    # Build a neighbor index only when at least one cutoff is finite.
-    # Use numpy for the isfinite check (scalar, not data-dependent).
+    def __init__(self, revents, rpoly, is_3d):
+        xp = _xp()
+        # Keep a CPU view of revents for KDTree construction and indexing.
+        self.revents = revents
+        self.rpoly = rpoly
+        rev_np = revents.get() if hasattr(revents, 'get') else (
+            revents if isinstance(revents, np.ndarray) else np.asarray(revents))
+        rpo_np = rpoly.get() if hasattr(rpoly, 'get') else (
+            rpoly if isinstance(rpoly, np.ndarray) else np.asarray(rpoly))
+
+        self.revents_np = rev_np
+        self.N = rev_np.shape[0]
+        # Resident backend arrays (GPU when active).
+        self.t = xp.asarray(rev_np[:, 0])
+        self.x = xp.asarray(rev_np[:, 1])
+        self.y = xp.asarray(rev_np[:, 2])
+        self.m = xp.asarray(rev_np[:, 3])
+        # flag is used in Python `if` comparisons → keep as numpy int array.
+        self.flag_np = np.asarray(rev_np[:, 4]).astype(int)
+        self.bk = xp.asarray(rev_np[:, 5])
+        self.z = xp.asarray(rev_np[:, 8]) if rev_np.shape[1] > 8 else None
+        self.m_np = np.asarray(rev_np[:, 3])          # CPU magnitudes for renorm
+        self.px = xp.asarray(rpo_np[:, 0])
+        self.py = xp.asarray(rpo_np[:, 1])
+
+
+def _compute_norms(tht, m_np, mver, is_3d, eps_t, eps_s, eps_z, Z_max):
+    """Renormalization constants from current ``tht`` (depends on params)."""
+    param = tht ** 2
+    return compute_all_norms(param, m_np, mver, eps_t=eps_t, eps_s=eps_s,
+                             eps_z=eps_z, Z_max=Z_max)
+
+
+def _build_neighbors(revents_np, tau_cut, r_cut):
+    """KDTree neighbor lists.  Depends only on cutoffs + coordinates, NOT on
+    parameters — so it should be built once per fit, not per probe.
+
+    Parameters
+    ----------
+    revents_np : np.ndarray
+        CPU-side event array (already extracted via .get() or from ctx).
+    """
     use_kd = ((tau_cut is not None and np.isfinite(tau_cut))
               or (r_cut is not None and np.isfinite(r_cut)))
-    if use_kd:
-        # NeighborIndex requires CPU numpy arrays; extract from whichever backend.
-        if hasattr(revents, 'get'):
-            rev_cpu = revents.get()
-        else:
-            rev_cpu = revents
-        nbr_index = NeighborIndex(
-            np.asarray(rev_cpu[:, 1]),
-            np.asarray(rev_cpu[:, 2]),
-            np.asarray(rev_cpu[:, 0]))
-        nbr_index.set_cutoffs(tau_cut, r_cut)
-        nbr_lists = nbr_index.query_all(tau_cut, r_cut)
-    else:
-        nbr_index = None
-        nbr_lists = None
-    return norms, nbr_index, nbr_lists
+    if not use_kd:
+        return None
+    nbr_index = NeighborIndex(
+        np.asarray(revents_np[:, 1]),
+        np.asarray(revents_np[:, 2]),
+        np.asarray(revents_np[:, 0]))
+    nbr_index.set_cutoffs(tau_cut, r_cut)
+    return nbr_index.query_all(tau_cut, r_cut)
+
+
+def _precompute(tht, revents, mver, is_3d, eps_t, eps_s, eps_z, Z_max, tau_cut, r_cut):
+    """Backward-compatible wrapper: renorm + neighbor lists (old call sites).
+
+    Prefer :func:`_compute_norms` + :func:`_build_neighbors` directly.
+    """
+    rev_np = revents.get() if hasattr(revents, 'get') else (
+        revents if isinstance(revents, np.ndarray) else np.asarray(revents))
+    m_np = np.asarray(rev_np[:, 3])
+    norms = _compute_norms(tht, m_np, mver, is_3d, eps_t, eps_s, eps_z, Z_max)
+    nbr_lists = _build_neighbors(rev_np, tau_cut, r_cut)
+    return norms, None, nbr_lists
 
 
 def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
              is_3d=False, eps_t=None, eps_s=None, eps_z=None,
-             norms=None, nbr_lists=None):
+             norms=None, nbr_lists=None, ctx=None):
     """Minus log-likelihood function of the ETAS model.
 
     When ``norms`` / ``nbr_lists`` are None they are recomputed from ``tht``;
     supplying them lets callers reuse precomputed state across the function
     and gradient evaluations at the same point.
+
+    When ``ctx`` (a :class:`_DataContext`) is supplied the catalog arrays are
+    read from it instead of being re-extracted from ``revents`` on every call
+    (avoids GPU<->CPU round-trips).
     """
     from .lambda_funcs import lambda_j, integ_j
 
-    xp = _xp()
+    if ctx is not None:
+        t = ctx.t; x = ctx.x; y = ctx.y; m = ctx.m; bk = ctx.bk; z = ctx.z
+        px = ctx.px; py = ctx.py; flag = ctx.flag_np; N = ctx.N
+        # --- Batch path: accumulate GPU results, sync once at end ---
+        xp = _xp()
+        tstart2 = tperiod[0]
+        tlength = tperiod[1]
+        Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
 
+        fv1_parts = []
+        fv2_parts = []
+
+        for j in range(N):
+            if flag[j] == 1:
+                nbr_j = nbr_lists[j] if nbr_lists is not None else None
+                s = lambda_j(tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
+                             mver, is_3d, tperiod, norms=norms, nbr_idx=nbr_j)
+                fv1_parts.append(s)
+            # integ_j does not need neighbor pruning (polygon integral is exact).
+            fv2_j = integ_j(tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
+                             is_3d=is_3d, norms=norms, Z_max=Z_max)
+            fv2_parts.append(fv2_j)
+
+        # Single sync for fv1: stack, log, sum
+        if fv1_parts:
+            fv1_arr = xp.stack(fv1_parts)
+            valid = fv1_arr > 1.0e-25
+            safe = xp.where(valid, fv1_arr, 1.0)
+            fv1 = float(xp.sum(xp.where(valid, xp.log(safe), -100.0)))
+        else:
+            fv1 = 0.0
+
+        # Single sync for fv2
+        if fv2_parts:
+            fv2 = float(xp.sum(xp.stack(fv2_parts)))
+        else:
+            fv2 = 0.0
+        fv2 += float(tht[0]) * float(tht[0]) * integ0
+
+        return -fv1 + fv2
+
+    # --- Legacy per-event path (no ctx) ---
+    xp = _xp()
     if norms is None or nbr_lists is None:
         Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
         norms, _, nbr_lists = _precompute(tht, revents, mver, is_3d,
@@ -100,7 +183,7 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     x = xp.asarray(revents_np[:, 1])
     y = xp.asarray(revents_np[:, 2])
     m = xp.asarray(revents_np[:, 3])
-    flag = xp.asarray(revents_np[:, 4]).astype(int)
+    flag = np.asarray(revents_np[:, 4]).astype(int)
     bk = xp.asarray(revents_np[:, 5])
     z = xp.asarray(revents_np[:, 8]) if revents_np.shape[1] > 8 else None
 
@@ -108,6 +191,7 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
         rpoly if isinstance(rpoly, np.ndarray) else np.asarray(rpoly))
     px = xp.asarray(rpoly_np[:, 0])
     py = xp.asarray(rpoly_np[:, 1])
+
     tstart2 = tperiod[0]
     tlength = tperiod[1]
     Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
@@ -116,7 +200,7 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     fv2 = 0.0
 
     for j in range(N):
-        if int(flag[j]) == 1:
+        if flag[j] == 1:
             nbr_j = nbr_lists[j] if nbr_lists is not None else None
             s = lambda_j(tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
                          mver, is_3d, tperiod, norms=norms, nbr_idx=nbr_j)
@@ -136,12 +220,72 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
 
 def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
                 is_3d=False, eps_t=None, eps_s=None, eps_z=None,
-                norms=None, nbr_lists=None):
+                norms=None, nbr_lists=None, ctx=None):
     """Minus log-likelihood and its gradient."""
     from .lambda_funcs import lambda_j_grad, integ_j_grad
 
     xp = _xp()
 
+    if ctx is not None:
+        t = ctx.t; x = ctx.x; y = ctx.y; m = ctx.m; bk = ctx.bk; z = ctx.z
+        px = ctx.px; py = ctx.py; flag = ctx.flag_np; N = ctx.N
+
+        # --- Batch path: accumulate GPU results, sync once at end ---
+        dimparam = len(tht)
+        tstart2 = tperiod[0]
+        tlength = tperiod[1]
+        Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
+
+        fv1_parts = []
+        df1_parts = []
+        fv2_parts = []
+        df2_parts = []
+
+        for j in range(N):
+            if flag[j] == 1:
+                nbr_j = nbr_lists[j] if nbr_lists is not None else None
+                fv_j, df_j = lambda_j_grad(
+                    tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
+                    mver, is_3d, tperiod, norms=norms, nbr_idx=nbr_j)
+                fv1_parts.append(fv_j)
+                df1_parts.append(df_j)
+
+            fv2_j, df2_j = integ_j_grad(
+                tht, j, t, x, y, m, px, py, tstart2, tlength, mver,
+                is_3d=is_3d, norms=norms, Z_max=Z_max)
+            fv2_parts.append(fv2_j)
+            df2_parts.append(df2_j)
+
+        # Single sync for fv1 + df1
+        if fv1_parts:
+            fv1_arr = xp.stack(fv1_parts)
+            df1_stack = xp.stack(df1_parts)
+            valid = fv1_arr > 1.0e-25
+            safe_fv1 = xp.where(valid, fv1_arr, 1.0)
+            fv1 = float(xp.sum(xp.where(valid, xp.log(safe_fv1), -100.0)))
+            # df1 = sum_j df_j / fv_j for valid events, 0 for invalid
+            inv_denom = xp.where(valid[:, None], 1.0 / safe_fv1[:, None], 0.0)
+            df1_gpu = xp.sum(df1_stack * inv_denom, axis=0)
+            df1 = np.asarray(df1_gpu)
+        else:
+            fv1 = 0.0
+            df1 = np.zeros(dimparam)
+
+        # Single sync for fv2 + df2
+        if fv2_parts:
+            fv2 = float(xp.sum(xp.stack(fv2_parts)))
+            df2 = np.asarray(xp.sum(xp.stack(df2_parts), axis=0))
+        else:
+            fv2 = 0.0
+            df2 = np.zeros(dimparam)
+        fv2 += float(tht[0]) * float(tht[0]) * integ0
+        df2[0] += integ0 * float(tht[0]) * 2
+
+        fv = -fv1 + fv2
+        dfv = -df1 + df2
+        return fv, dfv
+
+    # --- Legacy per-event path (no ctx) ---
     if norms is None or nbr_lists is None:
         Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
         norms, _, nbr_lists = _precompute(tht, revents, mver, is_3d,
@@ -151,12 +295,11 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     revents_np = revents.get() if hasattr(revents, 'get') else (
         revents if isinstance(revents, np.ndarray) else np.asarray(revents))
     N = revents_np.shape[0]
-    dimparam = len(tht)
     t = xp.asarray(revents_np[:, 0])
     x = xp.asarray(revents_np[:, 1])
     y = xp.asarray(revents_np[:, 2])
     m = xp.asarray(revents_np[:, 3])
-    flag = xp.asarray(revents_np[:, 4]).astype(int)
+    flag = np.asarray(revents_np[:, 4]).astype(int)
     bk = xp.asarray(revents_np[:, 5])
     z = xp.asarray(revents_np[:, 8]) if revents_np.shape[1] > 8 else None
 
@@ -164,6 +307,8 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
         rpoly if isinstance(rpoly, np.ndarray) else np.asarray(rpoly))
     px = xp.asarray(rpoly_np[:, 0])
     py = xp.asarray(rpoly_np[:, 1])
+
+    dimparam = len(tht)
     tstart2 = tperiod[0]
     tlength = tperiod[1]
     Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
@@ -174,7 +319,7 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
     df2 = xp.zeros(dimparam)
 
     for j in range(N):
-        if int(flag[j]) == 1:
+        if flag[j] == 1:
             nbr_j = nbr_lists[j] if nbr_lists is not None else None
             fv1_temp, g1_temp = lambda_j_grad(
                 tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
@@ -205,8 +350,15 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
 
 def _linesearch(tht, h, fv, ram, dimparam,
                 revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
-                is_3d=False, eps_t=None, eps_s=None, eps_z=None):
-    """Line search along direction ``h``."""
+                is_3d=False, eps_t=None, eps_s=None, eps_z=None,
+                nbr_lists=None, ctx=None):
+    """Line search along direction ``h``.
+
+    ``nbr_lists`` (and ``ctx``) are reused across all trial step sizes, so the
+    KDTree is built **once per line search**, not once per probe.  Only the
+    renormalization constants (which depend on ``tht``) are recomputed inside
+    each ``_loglkhd`` call.
+    """
     const2 = 1.0e-16
 
     if ram <= 1.0e-30:
@@ -222,7 +374,8 @@ def _linesearch(tht, h, fv, ram, dimparam,
 
     xNew = tht + ram2 * h
     fv2 = _loglkhd(xNew, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
-                   is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z)
+                   is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z,
+                   nbr_lists=nbr_lists, ctx=ctx)
 
     if fv2 > fv1:
         max_iters = 50
@@ -236,7 +389,8 @@ def _linesearch(tht, h, fv, ram, dimparam,
                 return fv, 0.0
             xNew = tht + ram2 * h
             fv2 = _loglkhd(xNew, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
-                           is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z)
+                           is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z,
+                           nbr_lists=nbr_lists, ctx=ctx)
             if math.isnan(fv2) or math.isinf(fv2):
                 continue
             if fv2 <= fv1:
@@ -249,7 +403,8 @@ def _linesearch(tht, h, fv, ram, dimparam,
             ram3 = ram2 * 2.0
             xNew = tht + ram3 * h
             fv3 = _loglkhd(xNew, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
-                           is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z)
+                           is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z,
+                           nbr_lists=nbr_lists, ctx=ctx)
             if math.isnan(fv3) or math.isinf(fv3):
                 break
             if fv3 > fv2:
@@ -272,7 +427,8 @@ def _linesearch(tht, h, fv, ram, dimparam,
     ram = b1 / b2
     xNew = tht + ram * h
     fv_new = _loglkhd(xNew, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
-                      is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z)
+                      is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z,
+                      nbr_lists=nbr_lists, ctx=ctx)
 
     if math.isnan(fv_new) or math.isinf(fv_new):
         fv_new = fv2
@@ -310,7 +466,8 @@ def _linesearch(tht, h, fv, ram, dimparam,
     ram = b1 / b2
     xNew = tht + ram * h
     fv_new = _loglkhd(xNew, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
-                      is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z)
+                      is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z,
+                      nbr_lists=nbr_lists, ctx=ctx)
 
     if fv2 < fv_new:
         ram = ram2
@@ -327,6 +484,10 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
 
     revents_xp = xp.asarray(revents)
     rpoly_xp = xp.asarray(rpoly)
+
+    # Build the resident data context ONCE — arrays stay on the active backend
+    # (GPU when active) for the entire fit, eliminating per-eval round-trips.
+    ctx = _DataContext(revents_xp, rpoly_xp, is_3d)
 
     # DFP inner loops use Python-level scalar math (sum(), *, +) on
     # dimparam-sized vectors — keep those on NumPy even when the engine is GPU.
@@ -354,14 +515,15 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
     wrk = np.zeros(dimparam)
 
     Z_max = tperiod[2] if (is_3d and len(tperiod) > 2) else None
-    norms, _, nbr_lists = _precompute(tht, revents, mver, is_3d,
-                                      eps_t, eps_s, eps_z, Z_max,
-                                      tau_cut, r_cut)
+    # Neighbor lists depend ONLY on cutoffs + coordinates (constant for the
+    # whole fit), so build them ONCE here — not inside every _linesearch probe.
+    nbr_lists = _build_neighbors(ctx.revents_np, tau_cut, r_cut)
+    norms = _compute_norms(tht, ctx.m_np, mver, is_3d, eps_t, eps_s, eps_z, Z_max)
 
     fv, g = _loglkhd_gr(tht, revents_xp, rpoly_xp, tperiod, integ0,
                         mver, tau_cut, r_cut, is_3d=is_3d,
                         eps_t=eps_t, eps_s=eps_s, eps_z=eps_z,
-                        norms=norms, nbr_lists=nbr_lists)
+                        norms=norms, nbr_lists=nbr_lists, ctx=ctx)
     # DFP inner loops require numpy scalars; convert gradient to numpy.
     g = g.get() if hasattr(g, 'get') else np.asarray(g)
 
@@ -443,7 +605,8 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
             ed, ramda = _linesearch(
                 tht, s, ed, ramda, dimparam,
                 revents_xp, rpoly_xp, tperiod, integ0, mver, tau_cut, r_cut,
-                is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z)
+                is_3d=is_3d, eps_t=eps_t, eps_s=eps_s, eps_z=eps_z,
+                nbr_lists=nbr_lists, ctx=ctx)
 
             if verbose:
                 print(f" zeta = {ramda:.6f}")
@@ -456,14 +619,14 @@ def dfp_fit(theta, revents, rpoly, tperiod, integ0, ihess,
                 tht[i] += dx[i]
 
             fv0 = fv
-            # Re-precompute renorm + neighbor lists at the new tht.
-            norms, _, nbr_lists = _precompute(tht, revents, mver, is_3d,
-                                              eps_t, eps_s, eps_z, Z_max,
-                                              tau_cut, r_cut)
+            # Only renorm constants change (depend on tht); neighbor lists are
+            # invariant for the whole fit, so reuse them.
+            norms = _compute_norms(tht, ctx.m_np, mver, is_3d,
+                                   eps_t, eps_s, eps_z, Z_max)
             fv, g = _loglkhd_gr(tht, revents_xp, rpoly_xp, tperiod, integ0,
                                 mver, tau_cut, r_cut, is_3d=is_3d,
                                 eps_t=eps_t, eps_s=eps_s, eps_z=eps_z,
-                                norms=norms, nbr_lists=nbr_lists)
+                                norms=norms, nbr_lists=nbr_lists, ctx=ctx)
             g = g.get() if hasattr(g, 'get') else np.asarray(g)
 
             if verbose:
