@@ -21,7 +21,7 @@ import sys
 
 from .renorm import compute_all_norms
 from .neighbors import NeighborIndex
-from .backend import get_xp as _get_xp
+from .backend import get_xp as _get_xp, get_engine
 
 
 def _xp():
@@ -176,8 +176,8 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
             norms = _compute_norms(tht, ctx.m_np, mver, is_3d,
                                    eps_t, eps_s, eps_z, Z_max)
 
-        # --- When pruning is active, use the flattened batch path ----------
-        if ctx.nbr_flat is not None:
+        # --- When pruning is active AND GPU, use the flattened batch path ---
+        if ctx.nbr_flat is not None and get_engine() == 'gpu':
             from .lambda_funcs import lambda_flat, integ_j
 
             lam = lambda_flat(tht, t, x, y, z, m, bk,
@@ -203,14 +203,17 @@ def _loglkhd(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
 
             return -fv1 + fv2
 
-        # --- Fallback: per-event path using ctx arrays (unpruned) ---------
+        # --- Fallback: per-event path using ctx arrays ----------------------
+        # On CPU, or when pruning is disabled — KDTree neighbor lists give
+        # O(N log N) scaling vs the O(P) flat path (which is GPU-optimized).
         from .lambda_funcs import lambda_j, integ_j
 
         fv1 = 0.0
         for j in range(N):
             if flag[j] == 1:
+                nbr_j = nbr_lists[j] if nbr_lists is not None else None
                 s = lambda_j(tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
-                             mver, is_3d, tperiod, norms=norms)
+                             mver, is_3d, tperiod, norms=norms, nbr_idx=nbr_j)
                 if s > 1.0e-25:
                     fv1 += math.log(float(s))
                 else:
@@ -296,8 +299,8 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
             norms = _compute_norms(tht, ctx.m_np, mver, is_3d,
                                    eps_t, eps_s, eps_z, Z_max)
 
-        # --- When pruning is active, use the flattened batch path ----------
-        if ctx.nbr_flat is not None:
+        # --- When pruning is active AND GPU, use the flattened batch path ---
+        if ctx.nbr_flat is not None and get_engine() == 'gpu':
             from .lambda_funcs import lambda_grad_flat, integ_j_grad
 
             lam, dlam = lambda_grad_flat(
@@ -340,15 +343,17 @@ def _loglkhd_gr(tht, revents, rpoly, tperiod, integ0, mver, tau_cut, r_cut,
             dfv = -df1 + df2
             return fv, dfv
 
-        # --- Fallback: per-event gradient path (unpruned) ------------------
+        # --- Fallback: per-event gradient path ------------------------------
         from .lambda_funcs import lambda_j_grad, integ_j_grad
 
         fv1 = 0.0
         df1 = np.zeros(dimparam)
         for j in range(N):
             if flag[j] == 1:
+                nbr_j = nbr_lists[j] if nbr_lists is not None else None
                 s, ds = lambda_j_grad(tht, j, t, x, y, z, m, bk, tau_cut, r_cut,
-                                      mver, is_3d, tperiod, norms=norms)
+                                      mver, is_3d, tperiod, norms=norms,
+                                      nbr_idx=nbr_j)
                 if s > 1.0e-25:
                     fv1 += math.log(s)
                     for i in range(dimparam):
