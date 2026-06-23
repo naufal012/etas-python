@@ -1664,10 +1664,11 @@ def _scatter_add(xp, out, indices, values):
 
     Uses ``xp.add.at`` (NumPy) or ``cupyx.scatter_add`` (CuPy).
     """
-    try:
+    from .backend import get_engine
+    if get_engine() == 'gpu':
         from cupyx import scatter_add as cp_scatter_add
         cp_scatter_add(out, indices, values)
-    except ImportError:
+    else:
         xp.add.at(out, indices, values)
 
 
