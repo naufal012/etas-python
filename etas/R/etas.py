@@ -66,6 +66,10 @@ class ETASResult:
     eps_z: Optional[float] = None
     Z_max: Optional[float] = None
     is_3d: bool = False
+    # Final pruning cutoffs (joint space-time); None when pruning disabled.
+    final_T_max: Optional[float] = None
+    final_R_max_mean: Optional[float] = None
+    final_R_max_median: Optional[float] = None
 
 
 def etas(catalog_obj, param0=None, bwd=None, nnp=5, bwm=0.05,
@@ -300,6 +304,34 @@ def etas(catalog_obj, param0=None, bwd=None, nnp=5, bwm=0.05,
                   f"median={np.median(pb):.6f}  "
                   f"max={pb.max():.6f}")
             print(f"integral of background seismicity rate: {integ0:.6f}")
+
+            # --- pruning statistics (joint space-time cutoffs) -----------------
+            if eps_t is not None or eps_s is not None:
+                _parts = []
+                if eps_t is not None and np.isfinite(current_tau):
+                    _parts.append(f"T_max = {current_tau:.4f} days")
+                if eps_s is not None and mver == 1:
+                    _R = norms_iter['R_max']
+                    _fin = np.isfinite(_R)
+                    if np.any(_fin):
+                        _Rf = _R[_fin]
+                        _unit = catalog_obj.dist_unit
+                        if _unit == 'degree':
+                            # approximate great-circle: 1° ≈ 111.195 km
+                            _R_km = _Rf * 111.195
+                            _parts.append(
+                                f"R_max = {float(np.mean(_R_km)):.2f} km "
+                                f"(mean, {float(np.median(_R_km)):.2f} km median, "
+                                f"min {float(np.min(_R_km)):.2f}, "
+                                f"max {float(np.max(_R_km)):.2f})")
+                        else:
+                            _parts.append(
+                                f"R_max = {float(np.mean(_Rf)):.2f} km "
+                                f"(mean, {float(np.median(_Rf)):.2f} km median, "
+                                f"min {float(np.min(_Rf)):.2f}, "
+                                f"max {float(np.max(_Rf)):.2f})")
+                if _parts:
+                    print("pruning cutoffs (joint space-time): " + ", ".join(_parts))
             print("=" * 54)
 
         # Parameter estimation step
@@ -349,6 +381,21 @@ def etas(catalog_obj, param0=None, bwd=None, nnp=5, bwm=0.05,
     # Update catalog
     catalog_obj.revents = revents
 
+    # Capture final pruning cutoffs for the result summary
+    _final_T_max = None
+    _final_R_mean = None
+    _final_R_median = None
+    if eps_t is not None or eps_s is not None:
+        if eps_t is not None and np.isfinite(current_tau):
+            _final_T_max = float(current_tau)
+        if eps_s is not None and mver == 1:
+            _R = norms_iter['R_max']
+            _fin = np.isfinite(_R)
+            if np.any(_fin):
+                _Rf = _R[_fin]
+                _final_R_mean = float(np.mean(_Rf))
+                _final_R_median = float(np.median(_Rf))
+
     return ETASResult(
         param=param1,
         bk=revents[:, 5].copy(),
@@ -370,6 +417,9 @@ def etas(catalog_obj, param0=None, bwd=None, nnp=5, bwm=0.05,
         eps_z=eps_z,
         Z_max=Z_max,
         is_3d=is_3d,
+        final_T_max=_final_T_max,
+        final_R_max_mean=_final_R_mean,
+        final_R_max_median=_final_R_median,
     )
 
 
@@ -411,3 +461,21 @@ def print_etas(result):
 
     print(f"\nlog-likelihood: {result.opt['loglik']:.4f}\t"
           f"AIC: {result.opt['aic']:.4f}")
+
+    # Pruning summary (joint space-time cutoffs at final parameters)
+    if result.final_T_max is not None or result.final_R_max_mean is not None:
+        _parts = []
+        if result.final_T_max is not None:
+            _parts.append(f"T_max = {result.final_T_max:.4f} days")
+        if result.final_R_max_mean is not None:
+            _unit = result.catalog.dist_unit
+            if _unit == 'degree':
+                _r_km = result.final_R_max_mean * 111.195
+                _parts.append(
+                    f"R_max = {_r_km:.2f} km (mean, "
+                    f"median = {result.final_R_max_median * 111.195:.2f} km)")
+            else:
+                _parts.append(
+                    f"R_max = {result.final_R_max_mean:.2f} km (mean, "
+                    f"median = {result.final_R_max_median:.2f} km)")
+        print(f"pruning cutoffs (joint space-time): " + ", ".join(_parts))
